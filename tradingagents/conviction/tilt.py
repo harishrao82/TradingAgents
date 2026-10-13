@@ -6,8 +6,9 @@ gets a multiplier on its equal weight from two checks:
 
 1. The news screen (the same cheap-model screen as ``tradingagents screen``):
    a fresh catalyst pointing up raises the weight, one pointing down cuts it.
-2. Earnings before the next rebalance: no name is overweighted into a report,
-   so an up tilt is capped at equal weight when earnings land in the window.
+2. Earnings: no name is overweighted into an imminent report, so an up tilt
+   is capped at equal weight when earnings land within ``tilt_earnings_hold_days``
+   weekdays (10 by default). Later reports before the next rebalance are noted only.
 
 Multipliers are clipped to [low, high] (0.5x-1.5x by default) and rescaled so
 they average 1, which keeps the whole book invested. A strong down call
@@ -109,9 +110,23 @@ def bounded_rescale(raw: dict[str, float], low: float, high: float, rounds: int 
     return {t: pinned.get(t, 1.0) for t in raw}
 
 
+def _weekdays_ahead(day: str, count: int) -> str:
+    d = datetime.strptime(day, "%Y-%m-%d").date()
+    for _ in range(count):
+        d += timedelta(days=1)
+        while d.weekday() >= 5:
+            d += timedelta(days=1)
+    return d.isoformat()
+
+
 def tilt_names(momentum: list[str], pullback: list[str], verdicts: list[NewsVerdict],
-               earnings: dict[str, str | None], low: float = 0.5, high: float = 1.5) -> list[NameTilt]:
-    """Turn news calls and earnings dates into one weight per basket name."""
+               earnings: dict[str, str | None], low: float = 0.5, high: float = 1.5,
+               hold_until: str | None = None) -> list[NameTilt]:
+    """Turn news calls and earnings dates into one weight per basket name.
+
+    An up tilt is held to equal weight when the report falls on or before
+    ``hold_until`` (every listed report when it is None).
+    """
     by_ticker = {v.ticker: v for v in verdicts}
     names = []
     for bucket, tickers in (("momentum", momentum), ("pullback", pullback)):
@@ -125,7 +140,7 @@ def tilt_names(momentum: list[str], pullback: list[str], verdicts: list[NewsVerd
                 raw = TILT_BY_CALL.get((v.direction, v.conviction), 1.0)
                 drop = (v.direction, v.conviction) == DROP_FLAG
             report = earnings.get(t)
-            if report and raw > 1.0:
+            if report and raw > 1.0 and (hold_until is None or report <= hold_until):
                 notes.append(f"up tilt held to equal weight: earnings {report}")
                 raw = 1.0
             elif report:
@@ -189,7 +204,8 @@ def run_basket_tilt(config: dict, day: str, momentum: list[str], pullback: list[
     with run_config(config):
         earnings = _earnings_in_window(tickers, day, until)
     names = tilt_names(momentum, pullback, screen.verdicts, earnings,
-                       config["tilt_min_multiplier"], config["tilt_max_multiplier"])
+                       config["tilt_min_multiplier"], config["tilt_max_multiplier"],
+                       _weekdays_ahead(day, config["tilt_earnings_hold_days"]))
     return BasketTilt(day, until, names, screen.screen_model, screen.failures)
 
 

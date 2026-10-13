@@ -74,3 +74,10 @@ def test_run_basket_tilt_saves_json(monkeypatch, tmp_path):
     md, js = tilt_mod.save_tilt(result, tilt_mod.render_tilt(result), str(tmp_path))
     saved = json.loads((tmp_path / "tilts" / "latest.json").read_text())
     assert saved["multipliers"] == result.multipliers and md.exists()
+
+
+def test_only_imminent_earnings_hold_an_up_tilt():
+    names = tilt_names(["SOON", "LATER"], [], [_v("SOON", "up", 4), _v("LATER", "up", 4)],
+                       {"SOON": "2026-10-20", "LATER": "2026-11-12"}, hold_until="2026-10-27")
+    by = {n.ticker: n for n in names}
+    assert by["SOON"].raw == 1.0 and by["LATER"].raw == 1.3
