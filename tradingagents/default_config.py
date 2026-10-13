@@ -175,6 +175,10 @@ def build_default_config() -> dict:
         "screen_batch": False,
         "screen_max_tokens": 1500,       # per batch answer; thinking counts toward it
         "risk_per_trade": 0.03,          # max loss per idea, as a share of --equity
+        # Basket tilt (tradingagents tilt): bounds on each name's weight vs equal weight
+        "tilt_min_multiplier": 0.5,
+        "tilt_max_multiplier": 1.5,
+        "tilt_earnings_hold_days": 0,    # weekdays: no up tilt into a report this close; 0 = off
         # Data vendor configuration
         # Category-level configuration (default for all tools in category).
         # The configured value is the exact vendor chain — requests are NOT silently

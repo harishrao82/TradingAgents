@@ -203,5 +203,47 @@ def screen(
     console.print(f"Saved: {path}")
 
 
+@app.command()
+def tilt(
+    momentum: str = typer.Option(..., "--momentum", help="Comma-separated momentum names, as the rebalance picked them"),
+    pullback: str = typer.Option("", "--pullback", help="Comma-separated pullback names"),
+    date: str = typer.Option(None, "--date", help="Screen date, YYYY-MM-DD; omit for today"),
+    until: str = typer.Option(None, "--until", help="Earnings window end; default the next month-end rebalance"),
+    batch: bool = typer.Option(False, "--batch", help="Screen through Anthropic's Batches API: half price, slower"),
+    low: float = typer.Option(None, "--min", help="Lowest weight vs equal weight (default 0.5)"),
+    high: float = typer.Option(None, "--max", help="Highest weight vs equal weight (default 1.5)"),
+):
+    """Tilt an equal-weight basket's weights from the news screen and earnings dates. Places no orders.
+
+    Writes a report and a JSON of multipliers to <results_dir>/tilts/ (latest.json is the newest),
+    which the REL-HYBRID rebalance cell reads.
+    """
+    from datetime import date as _date
+
+    from tradingagents.conviction.tilt import render_tilt, run_basket_tilt, save_tilt
+
+    config = dict(DEFAULT_CONFIG)
+    if batch:
+        config["screen_batch"] = True
+    if low is not None:
+        config["tilt_min_multiplier"] = low
+    if high is not None:
+        config["tilt_max_multiplier"] = high
+
+    def _names(text):
+        return [t.strip().upper() for t in (text or "").split(",") if t.strip()]
+
+    try:
+        result = run_basket_tilt(config, date or _date.today().isoformat(), _names(momentum), _names(pullback),
+                                 until=until, progress=lambda m: console.print(f"[dim]{m}[/dim]"))
+    except Exception as exc:  # a missing key or an unreachable vendor is a setup error
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    text = render_tilt(result)
+    md, js = save_tilt(result, text, config["results_dir"])
+    console.print(text)
+    console.print(f"Saved: {md}\nWeights: {js}")
+
+
 if __name__ == "__main__":
     app()
