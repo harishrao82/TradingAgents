@@ -78,7 +78,9 @@ class TestOptionChain:
         assert "ATM strike 340.0; ATM IV 22.5%" in out
         assert "ATM straddle 15.40, an implied move of about ±4.5% by expiry" in out
         assert "25-delta skew (put IV minus call IV) +6.0 points" in out
-        assert "| 340.0 (ATM) | 8.00/8.40 | 0.52 | 22.0% | 900 |" in out
+        assert "| 340.0 (ATM) | 22.5% | 8.00/8.40 | 0.52 | 900 | 7.00/7.40 | -0.48 | 1000 |" in out
+        # Below the money the put's IV is read, above it the call's.
+        assert "| 330.0 | 26.0% |" in out and "| 350.0 | 20.0% |" in out
 
     def test_a_contract_with_no_bid_shows_no_iv(self):
         get, _ = _stub({"2026-11-20": CHAIN})
@@ -95,12 +97,44 @@ class TestOptionChain:
         with mock.patch.object(tradier.requests, "get", side_effect=get), pytest.raises(NoMarketDataError):
             tradier.get_option_chain("AAPL", TODAY)
 
-    def test_an_expiry_with_no_open_interest_is_flagged(self):
-        fresh = [dict(o, open_interest=0) for o in CHAIN]
-        get, _ = _stub({"2026-11-20": fresh})
+    def test_an_expiry_with_no_open_interest_is_skipped(self):
+        fresh = [dict(o, open_interest=0, expiration_type="weeklys") for o in CHAIN]
+        get, _ = _stub({"2026-10-26": fresh, "2026-11-20": CHAIN},
+                       expirations=("2026-10-26", "2026-11-20"))
         with mock.patch.object(tradier.requests, "get", side_effect=get):
             out = tradier.get_option_chain("AAPL", TODAY)
-        assert "No open interest yet" in out
+        assert "Skipped for having no open interest yet: 2026-10-26." in out
+        assert "### 2026-10-26" not in out and "### 2026-11-20" in out
+        get, _ = _stub({"2026-11-20": fresh}, expirations=("2026-11-20",))
+        with mock.patch.object(tradier.requests, "get", side_effect=get), pytest.raises(NoMarketDataError):
+            tradier.get_option_chain("AAPL", TODAY)
+
+    def test_expiries_spread_across_the_window_with_the_monthly(self):
+        # Eight dailies 7-30 days out: show the nearest, the monthly and the furthest.
+        dates = ("2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23",
+                 "2026-10-26", "2026-10-30", "2026-11-06")
+        monthly = ("2026-10-16",)  # third Friday of October falls before the window
+        get, calls = _stub(dict.fromkeys(dates, CHAIN), expirations=monthly + dates)
+        with mock.patch.object(tradier.requests, "get", side_effect=get):
+            out = tradier.get_option_chain("SPY", TODAY, 7, 30)
+        fetched = [p["expiration"] for _, path, p, _ in calls if path == "markets/options/chains"]
+        assert fetched == ["2026-10-19", "2026-11-06", "2026-10-20"]
+        assert out.index("### 2026-10-19") < out.index("### 2026-10-20") < out.index("### 2026-11-06")
+
+    def test_a_monthly_in_the_window_is_preferred_over_adjacent_dates(self):
+        dates = ("2026-10-26", "2026-10-30", "2026-11-06", "2026-11-20", "2026-12-04")
+        get, calls = _stub(dict.fromkeys(dates, CHAIN), expirations=dates)
+        with mock.patch.object(tradier.requests, "get", side_effect=get):
+            tradier.get_option_chain("AAPL", TODAY)
+        fetched = [p["expiration"] for _, path, p, _ in calls if path == "markets/options/chains"]
+        assert fetched == ["2026-10-26", "2026-11-20", "2026-12-04"]
+
+    def test_wide_quotes_are_marked(self):
+        wide = CHAIN + [_option("call", 360.0, 0.80, 1.46, 0.17, 0.199, 50)]
+        get, _ = _stub({"2026-11-20": wide})
+        with mock.patch.object(tradier.requests, "get", side_effect=get):
+            out = tradier.get_option_chain("AAPL", TODAY)
+        assert "0.80/1.46 (wide)" in out and "8.00/8.40 |" in out
 
     def test_a_historical_date_is_not_served_todays_chain(self):
         with mock.patch.object(tradier.requests, "get") as get:

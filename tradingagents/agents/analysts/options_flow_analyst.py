@@ -3,6 +3,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tradingagents.agents.analysts.turn import take_turn
 from tradingagents.agents.context import get_instrument_context_from_state, get_language_instruction
 from tradingagents.agents.tools import (
+    get_earnings_calendar,
     get_market_tide,
     get_option_chain,
     get_options_activity,
@@ -15,6 +16,7 @@ TOOLS = (
     get_options_activity,
     get_market_tide,
     get_option_chain,
+    get_earnings_calendar,
 )
 
 
@@ -24,7 +26,7 @@ def create_options_flow_analyst(llm):
         instrument_context = get_instrument_context_from_state(state)
 
         system_message = (
-            "You are an options flow analyst on a trading desk. Read how options traders are positioned in the instrument under analysis and in the market as a whole. Use the available tools: get_options_flow(curr_date, look_back_days, min_premium) for unusual flow alerts such as sweeps, floor trades and repeated hits; get_options_activity(curr_date) for daily call and put volume against the 30-day average, net premium, open interest, implied volatility and 1-year IV rank;, get_market_tide(curr_date) for market-wide net call and put premium, and get_option_chain(curr_date, min_days_to_expiry, max_days_to_expiry) for the live chain: ATM implied volatility, the implied move to each expiry, the 25-delta skew and the strikes around the money."
+            "You are an options flow analyst on a trading desk. Read how options traders are positioned in the instrument under analysis and in the market as a whole. Use the available tools: get_options_flow(curr_date, look_back_days, min_premium) for unusual flow alerts such as sweeps, floor trades and repeated hits; get_options_activity(curr_date) for daily call and put volume against the 30-day average, net premium, open interest, implied volatility and 1-year IV rank;, get_market_tide(curr_date) for market-wide net call and put premium, and get_option_chain(curr_date, min_days_to_expiry, max_days_to_expiry) for the live chain: ATM implied volatility, the implied move to each expiry, the 25-delta skew and the strikes around the money; and get_earnings_calendar(curr_date) for the next earnings date, so an expiry that spans the report is read as carrying the earnings move rather than ordinary volatility."
             " Cover: (1) the directional lean of the flow, weighing ask-side against bid-side premium rather than raw call or put counts; (2) where the size is concentrated by strike and expiry, and whether it sits before or after the next likely catalyst; (3) whether volume is unusual against its average and against open interest, which suggests new positions; (4) whether implied volatility is cheap or rich on its IV rank, and what that means for buying versus selling premium; (5) whether the stock's flow agrees with the market tide; and (6) from the live chain, the expiries and strikes with enough open interest to trade, and the move the market prices in by each expiry."
             " Only alerts made entirely of opening trades are known to be new positions, and a large trade may be a hedge; say how much weight the evidence bears. If a tool reports data unavailable, say so and do not estimate the missing values."
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""

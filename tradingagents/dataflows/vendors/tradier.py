@@ -36,9 +36,14 @@ REQUEST_TIMEOUT = 30
 DEFAULT_MIN_DTE = 14
 DEFAULT_MAX_DTE = 60
 
-# Expirations shown per call, and strikes shown each side of the money.
+# Expirations shown per call, chains fetched at most to find them, and strikes
+# shown each side of the money.
 MAX_EXPIRATIONS = 3
+MAX_CHAIN_FETCHES = 6
 STRIKES_EACH_SIDE = 5
+
+# A quote whose spread is wider than this share of its mid is marked as wide.
+WIDE_SPREAD = 0.25
 
 
 class TradierNotConfiguredError(VendorNotConfiguredError):
@@ -123,6 +128,15 @@ def _iv(option: dict) -> float | None:
     return mid if mid else _num(greeks.get("smv_vol"))
 
 
+def _quote_text(option: dict) -> str:
+    """``bid/ask``, marked ``(wide)`` when the spread is a large share of the mid."""
+    bid, ask = _num(option.get("bid")), _num(option.get("ask"))
+    text = f"{_price(bid)}/{_price(ask)}"
+    if bid and ask and (ask - bid) / ((ask + bid) / 2) > WIDE_SPREAD:
+        text += " (wide)"
+    return text
+
+
 def _pct(value: float | None) -> str:
     return "?" if value is None else f"{value * 100:.1f}%"
 
@@ -146,11 +160,15 @@ def _summarise_expiration(expiration: str, days: int, options: list, spot: float
     atm_ivs = [iv for iv in (_iv(call), _iv(put)) if iv]
     atm_iv = sum(atm_ivs) / len(atm_ivs) if atm_ivs else None
 
-    def near_delta(book: dict, target: float):
-        quoted = [o for o in book.values() if _iv(o) and _num((o.get("greeks") or {}).get("delta")) is not None]
+    def near_delta(book: dict, target: float, otm):
+        # Out-of-the-money contracts only: in-the-money quotes are wide and
+        # their implied volatilities unreliable.
+        quoted = [o for o in book.values()
+                  if otm(float(o["strike"])) and _iv(o) and _num((o.get("greeks") or {}).get("delta")) is not None]
         return min(quoted, key=lambda o: abs(_num(o["greeks"]["delta"]) - target), default=None)
 
-    put25, call25 = near_delta(puts, -0.25), near_delta(calls, 0.25)
+    put25 = near_delta(puts, -0.25, lambda k: k < spot)
+    call25 = near_delta(calls, 0.25, lambda k: k > spot)
     skew = (_iv(put25) - _iv(call25)) if put25 and call25 else None
     call_oi = sum(int(_num(o.get("open_interest")) or 0) for o in calls.values())
     put_oi = sum(int(_num(o.get("open_interest")) or 0) for o in puts.values())
@@ -169,25 +187,47 @@ def _summarise_expiration(expiration: str, days: int, options: list, spot: float
         + (f", put/call {put_oi / call_oi:.2f}" if call_oi else "")
     )
     lines.append("- " + "; ".join(facts))
-    if call_oi + put_oi == 0:
-        lines.append("- No open interest yet: a newly listed expiry, likely thin; prefer a listed monthly.")
 
     index = strikes.index(atm)
     window = strikes[max(0, index - STRIKES_EACH_SIDE): index + STRIKES_EACH_SIDE + 1]
     lines.append(
-        "\n| Strike | Call bid/ask | Call delta | Call IV | Call OI | Put bid/ask | Put delta | Put IV | Put OI |\n"
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+        "\n| Strike | IV (OTM side) | Call bid/ask | Call delta | Call OI | Put bid/ask | Put delta | Put OI |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |"
     )
     for strike in window:
         c, p = calls.get(strike, {}), puts.get(strike, {})
         cd, pd_ = (c.get("greeks") or {}).get("delta"), (p.get("greeks") or {}).get("delta")
+        # Each strike's IV comes from its out-of-the-money side; the ATM row averages both.
+        iv = atm_iv if strike == atm else _iv(p) if float(strike) < spot else _iv(c)
         lines.append(
-            f"| {strike}{' (ATM)' if strike == atm else ''} | {_price(c.get('bid'))}/{_price(c.get('ask'))} | "
-            f"{'?' if _num(cd) is None else f'{_num(cd):.2f}'} | {_pct(_iv(c))} | {c.get('open_interest', '?')} | "
-            f"{_price(p.get('bid'))}/{_price(p.get('ask'))} | {'?' if _num(pd_) is None else f'{_num(pd_):.2f}'} | "
-            f"{_pct(_iv(p))} | {p.get('open_interest', '?')} |"
+            f"| {strike}{' (ATM)' if strike == atm else ''} | {_pct(iv)} | {_quote_text(c)} | "
+            f"{'?' if _num(cd) is None else f'{_num(cd):.2f}'} | {c.get('open_interest', '?')} | "
+            f"{_quote_text(p)} | {'?' if _num(pd_) is None else f'{_num(pd_):.2f}'} | {p.get('open_interest', '?')} |"
         )
     return "\n".join(lines) + "\n"
+
+
+def _open_interest(options: list) -> int:
+    return sum(int(_num(o.get("open_interest")) or 0) for o in options)
+
+
+def _is_monthly(date: str) -> bool:
+    """Whether an expiry is the standard monthly: the third Friday of its month."""
+    day = datetime.strptime(date, "%Y-%m-%d")
+    return day.weekday() == 4 and 15 <= day.day <= 21
+
+
+def _expiry_order(in_window: list) -> list:
+    """The order to try expiries in: the nearest, the monthlies, the furthest, then the rest.
+
+    Showing the first few dates would give three adjacent dailies on an index
+    and miss the monthly, where open interest is deepest.
+    """
+    dates = [d for d, _ in in_window]
+    preferred = [dates[0], *[d for d in dates if _is_monthly(d)], dates[-1]]
+    order = list(dict.fromkeys(preferred + dates))
+    by_date = dict(in_window)
+    return [(d, by_date[d]) for d in order]
 
 
 def get_option_chain(
@@ -237,20 +277,30 @@ def get_option_chain(
 
     parts = [header, f"\nUnderlying {ticker} last {spot:.2f}. Expirations {min_dte}-{max_dte} days out: "
              f"{', '.join(d for d, _ in in_window)}.\n"]
-    shown = 0
-    for date, days in in_window:
-        if shown == MAX_EXPIRATIONS:
+    shown, skipped, fetched = [], [], 0
+    for date, days in _expiry_order(in_window):
+        if len(shown) == MAX_EXPIRATIONS or fetched == MAX_CHAIN_FETCHES:
             break
         chain = _request("markets/options/chains", {"symbol": ticker, "expiration": date, "greeks": "true"})
+        fetched += 1
         options = _as_list((chain.get("options") or {}).get("option"))
         if not options:
             continue
-        parts.append(_summarise_expiration(date, days, options, spot))
-        shown += 1
-    if shown == 0:
-        raise NoMarketDataError(ticker, detail=f"no chain data for expirations {min_dte}-{max_dte} days out")
+        # A newly listed expiry has no open interest yet and quotes too thin to read.
+        if _open_interest(options) == 0:
+            skipped.append(date)
+            continue
+        shown.append((date, _summarise_expiration(date, days, options, spot)))
+    if not shown:
+        detail = f"no chain with open interest for expirations {min_dte}-{max_dte} days out"
+        raise NoMarketDataError(ticker, detail=detail)
+    if skipped:
+        parts.append(f"Skipped for having no open interest yet: {', '.join(skipped)}.\n")
+    parts.extend(text for _, text in sorted(shown))
     parts.append(
-        "\nIVs are annualised; delta is per share; a contract with no bid shows no IV. "
-        "Bid/ask are per share (x100 per contract).\n"
+        "\nIVs are annualised, read from the out-of-the-money side of each strike (the ATM row "
+        "averages both); a contract with no bid shows no IV. Delta is per share; bid/ask are per "
+        "share (x100 per contract); (wide) marks a spread over 25% of the mid. An expiry after the "
+        "next earnings date carries the earnings move in its IV.\n"
     )
     return "".join(parts)
