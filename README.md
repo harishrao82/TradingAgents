@@ -388,6 +388,7 @@ Each cell is scored on realized alpha against the instrument's regional benchmar
 tradingagents screen SPY --equity 200000      # size each idea to 3% of equity
 tradingagents screen SPY --screen-only        # the news screen alone
 tradingagents screen SPY --direction down     # bearish names only, traded with puts
+tradingagents screen SPY --batch              # half-price screen via Anthropic's Batches API, for pre-market runs
 tradingagents screen --tickers LITE,NVDA      # a hand-picked list instead of an ETF
 ```
 

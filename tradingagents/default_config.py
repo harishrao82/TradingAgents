@@ -170,6 +170,10 @@ def build_default_config() -> dict:
         "screen_max_names": 8,           # cap on the strategist's short list
         "screen_direction": "both",      # both (half the slots each), up (calls only) or down (puts only)
         "screen_workers": 8,             # parallel screen calls
+        # Batch: one Anthropic Message Batches request at half price, no rate limit;
+        # a full SPY screen took about 3 minutes, but a batch may take up to 24 hours.
+        "screen_batch": False,
+        "screen_max_tokens": 1500,       # per batch answer; thinking counts toward it
         "risk_per_trade": 0.03,          # max loss per idea, as a share of --equity
         # Data vendor configuration
         # Category-level configuration (default for all tools in category).

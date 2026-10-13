@@ -2,8 +2,9 @@
 
 1. The ETF's holdings come from Unusual Whales.
 2. Each holding's Benzinga news for the last few days is read in bulk through
-   Alpaca, and a cheap model (Gemini Flash on OpenRouter by default) screens
-   it for a move up or down with conviction.
+   Alpaca, and a cheap model (Claude Haiku 5.5 by default, optionally through
+   Anthropic's Batches API at half price) screens it for a move up or down
+   with conviction.
 3. The strongest calls go to the options strategist on the deep model tier,
    which suggests a defined-risk trade for each.
 
@@ -16,6 +17,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import anthropic
+
 from tradingagents.dataflows.config import run_config
 from tradingagents.dataflows.vendors import alpaca, unusual_whales
 from tradingagents.llm_clients.factory import (
@@ -24,6 +27,7 @@ from tradingagents.llm_clients.factory import (
     create_tier_client,
 )
 
+from .batch import screen_news_batch
 from .screen import NewsVerdict, screen_news, shortlist
 from .strategist import OptionsIdea, contracts_for, max_gain, suggest
 
@@ -84,11 +88,20 @@ def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> Scr
     news = alpaca.get_news_by_symbol(list(weights), start, date, config["screen_articles_per_name"])
     say(f"{len(news)} names have Benzinga news from {start} to {date}")
 
-    screener, strategist = llms or (screen_llm(config), None)
-    verdicts, failures = screen_news(
-        screener, news, start, date, config["screen_workers"], per_minute=config["screen_requests_per_minute"],
-        progress=lambda done, total, ticker: say(f"screened {done}/{total}") if done % 50 == 0 or done == total else None,
-    )
+    screener, strategist = llms or (None, None)
+    if config["screen_batch"]:
+        if config["screen_llm_provider"].lower() != "anthropic":
+            raise ValueError("Batch screening uses Anthropic's Batches API; set screen_llm_provider to anthropic.")
+        verdicts, failures = screen_news_batch(
+            screener or anthropic.Anthropic(), config["screen_llm"], news, start, date,
+            max_tokens=config["screen_max_tokens"], progress=say,
+        )
+    else:
+        verdicts, failures = screen_news(
+            screener or screen_llm(config), news, start, date, config["screen_workers"],
+            per_minute=config["screen_requests_per_minute"],
+            progress=lambda done, total, ticker: say(f"screened {done}/{total}") if done % 50 == 0 or done == total else None,
+        )
     picked = shortlist(verdicts, config["screen_min_conviction"], config["screen_max_names"], weights,
                        config["screen_direction"])
     say(f"{len(picked)} names on the short list: {', '.join(v.ticker for v in picked) or 'none'}")
