@@ -281,3 +281,70 @@ def test_put_ideas_have_a_capped_max_gain():
                             legs=[OptionLeg(action="buy", option_type="call", strike=100, expiration="2026-11-20")])
     assert max_gain(long_call) is None
     assert max_gain(_idea()) == 250.0  # the model's own figure is kept
+
+
+class _FakeBatches:
+    """Stands in for client.messages.batches: ends after one poll, then serves canned results."""
+
+    def __init__(self, answers):
+        self.answers, self.created, self.polls = answers, None, 0
+
+    def create(self, requests):
+        self.created = requests
+        return SimpleNamespace(id="b1", processing_status="in_progress")
+
+    def retrieve(self, batch_id):
+        self.polls += 1
+        return SimpleNamespace(id=batch_id, processing_status="ended",
+                               request_counts=SimpleNamespace(succeeded=len(self.created), errored=0))
+
+    def results(self, batch_id):
+        for request in self.created:
+            ticker = request["params"]["messages"][0]["content"].split("articles about ", 1)[1].split(" ", 1)[0]
+            kind, text, stop = self.answers[ticker]
+            message = SimpleNamespace(stop_reason=stop, content=[SimpleNamespace(type="thinking"),
+                                                                 SimpleNamespace(type="text", text=text)])
+            yield SimpleNamespace(custom_id=request["custom_id"], result=SimpleNamespace(type=kind, message=message))
+
+
+def _batch_client(answers):
+    return SimpleNamespace(messages=SimpleNamespace(batches=_FakeBatches(answers)))
+
+
+def test_batch_screen_parses_results_and_records_failures():
+    from tradingagents.conviction.batch import screen_news_batch
+
+    ok = '{"direction": "down", "conviction": 5, "catalyst": "guidance cut", "reason": "r"}'
+    client = _batch_client({"BRK.B": ("succeeded", ok, "end_turn"), "PEP": ("succeeded", ok, "end_turn"),
+                            "T": ("succeeded", '{"direction": "up"', "max_tokens"), "KR": ("errored", "", None)})
+    news = dict.fromkeys(("BRK.B", "PEP", "T", "KR"), "news")
+
+    verdicts, failures = screen_news_batch(client, "claude-haiku-5-5", news, "2026-10-09", "2026-10-13",
+                                           sleep=lambda s: None)
+
+    batches = client.messages.batches
+    assert [r["custom_id"] for r in batches.created] == ["n0", "n1", "n2", "n3"]  # BRK.B's dot isn't allowed in ids
+    assert batches.created[0]["params"]["model"] == "claude-haiku-5-5" and batches.polls == 1
+    assert sorted(v.ticker for v in verdicts) == ["BRK.B", "PEP"]
+    assert failures == {"T": "answer cut off at the token limit", "KR": "batch request errored"}
+
+
+def test_screen_with_batch_option(monkeypatch):
+    monkeypatch.setattr(alpaca, "get_news_by_symbol", lambda symbols, start, end, per: {"PEP": "Pepsi news"})
+    client = _batch_client({"PEP": ("succeeded", '{"direction": "down", "conviction": 5, "catalyst": "c", '
+                                                 '"reason": "r"}', "end_turn")})
+    monkeypatch.setattr(workflow.screen_news_batch.__globals__["time"], "sleep", lambda s: None)
+    config = {**default_config.DEFAULT_CONFIG, "screen_batch": True, "screen_llm_provider": "anthropic"}
+
+    result = workflow.run_conviction_screen(config, "2026-10-13", tickers=["PEP"], screen_only=True,
+                                            llms=(client, None))
+
+    assert [(v.ticker, v.direction) for v in result.shortlist] == [("PEP", "down")]
+
+
+def test_batch_needs_an_anthropic_screener(monkeypatch):
+    monkeypatch.setattr(alpaca, "get_news_by_symbol", lambda symbols, start, end, per: {"PEP": "news"})
+    config = {**default_config.DEFAULT_CONFIG, "screen_batch": True, "screen_llm_provider": "openrouter"}
+
+    with pytest.raises(ValueError, match="Batches API"):
+        workflow.run_conviction_screen(config, "2026-10-13", tickers=["PEP"], screen_only=True, llms=(object(), None))

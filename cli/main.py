@@ -163,6 +163,9 @@ def screen(
     tickers: str = typer.Option(None, "--tickers", help="Comma-separated tickers to screen instead of the ETF"),
     equity: float = typer.Option(None, "--equity", help="Account size, to size each idea to the per-trade risk"),
     screen_only: bool = typer.Option(False, "--screen-only", help="Stop after the news screen; no strategist"),
+    batch: bool = typer.Option(
+        False, "--batch", help="Screen through Anthropic's Batches API: half price, usually minutes, up to 24 hours"
+    ),
     min_conviction: int = typer.Option(None, "--min-conviction", help="1-5; default from config (4)"),
     max_names: int = typer.Option(None, "--max-names", help="Cap on the strategist's short list"),
     direction: str = typer.Option(
@@ -179,6 +182,8 @@ def screen(
         config["screen_min_conviction"] = min_conviction
     if max_names is not None:
         config["screen_max_names"] = max_names
+    if batch:
+        config["screen_batch"] = True
     if direction is not None:
         if direction.lower() not in ("both", "up", "down"):
             console.print("[red]--direction must be both, up or down[/red]")
