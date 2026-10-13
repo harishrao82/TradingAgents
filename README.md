@@ -382,11 +382,12 @@ Each cell is scored on realized alpha against the instrument's regional benchmar
 
 ## Conviction screen
 
-`tradingagents screen` looks for a few high-conviction options ideas in an ETF's holdings. The holdings list comes from Unusual Whales. A cheap model reads each name's Benzinga news from the last three weekdays; by default this is Claude Haiku, set by `screen_llm`. Gemini Flash on OpenRouter also works, with `screen_requests_per_minute` set to stay under OpenRouter's rate limit. It flags the names whose news points up or down with conviction. The deep model tier then suggests a defined-risk options trade, 14-60 days out, for each flagged name. It reads the live Tradier chain, IV rank and options flow to do so.
+`tradingagents screen` looks for a few high-conviction options ideas in an ETF's holdings. The holdings list comes from Unusual Whales. A cheap model reads each name's Benzinga news from the last three weekdays; by default this is Claude Haiku 5.5, set by `screen_llm`. Gemini Flash on OpenRouter also works, with `screen_requests_per_minute` set to stay under OpenRouter's rate limit. It flags the names whose news points up or down with conviction. The deep model tier then suggests a defined-risk options trade, 14-60 days out, for each flagged name: calls or bull put spreads for names expected to rise, and puts or bear call spreads for names expected to fall. By default up to half the ideas are bearish, so good news can't crowd them out. It reads the live Tradier chain, IV rank and options flow to do so.
 
 ```bash
 tradingagents screen SPY --equity 200000      # size each idea to 3% of equity
 tradingagents screen SPY --screen-only        # the news screen alone
+tradingagents screen SPY --direction down     # bearish names only, traded with puts
 tradingagents screen --tickers LITE,NVDA      # a hand-picked list instead of an ETF
 ```
 

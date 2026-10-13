@@ -165,6 +165,9 @@ def screen(
     screen_only: bool = typer.Option(False, "--screen-only", help="Stop after the news screen; no strategist"),
     min_conviction: int = typer.Option(None, "--min-conviction", help="1-5; default from config (4)"),
     max_names: int = typer.Option(None, "--max-names", help="Cap on the strategist's short list"),
+    direction: str = typer.Option(
+        None, "--direction", help="both (default; up to half the ideas each way), up (calls) or down (puts)"
+    ),
 ):
     """Screen an ETF's holdings for conviction news and suggest an options trade for each. Places no orders."""
     from datetime import date as _date
@@ -176,6 +179,11 @@ def screen(
         config["screen_min_conviction"] = min_conviction
     if max_names is not None:
         config["screen_max_names"] = max_names
+    if direction is not None:
+        if direction.lower() not in ("both", "up", "down"):
+            console.print("[red]--direction must be both, up or down[/red]")
+            raise typer.Exit(code=1)
+        config["screen_direction"] = direction.lower()
     names = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers else None
     when = date or _date.today().isoformat()
     try:

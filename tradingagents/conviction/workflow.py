@@ -25,7 +25,7 @@ from tradingagents.llm_clients.factory import (
 )
 
 from .screen import NewsVerdict, screen_news, shortlist
-from .strategist import OptionsIdea, contracts_for, suggest
+from .strategist import OptionsIdea, contracts_for, max_gain, suggest
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,8 @@ def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> Scr
         screener, news, start, date, config["screen_workers"], per_minute=config["screen_requests_per_minute"],
         progress=lambda done, total, ticker: say(f"screened {done}/{total}") if done % 50 == 0 or done == total else None,
     )
-    picked = shortlist(verdicts, config["screen_min_conviction"], config["screen_max_names"], weights)
+    picked = shortlist(verdicts, config["screen_min_conviction"], config["screen_max_names"], weights,
+                       config["screen_direction"])
     say(f"{len(picked)} names on the short list: {', '.join(v.ticker for v in picked) or 'none'}")
 
     result = ScreenResult(etf=etf if not tickers else "custom list", date=date, start=start, universe=len(weights),
@@ -117,7 +118,8 @@ def _money(value: float | None) -> str:
 
 def _render_idea(item: Idea, equity: float | None, risk: float) -> str:
     v, idea = item.verdict, item.idea
-    head = f"## {v.ticker}: {v.direction} (conviction {v.conviction}/5)\n\n**Catalyst:** {v.catalyst}. {v.reason}\n"
+    side = "bullish" if v.direction == "up" else "bearish"
+    head = f"## {v.ticker}: {side} (conviction {v.conviction}/5)\n\n**Catalyst:** {v.catalyst}. {v.reason}\n"
     if isinstance(idea, str):
         return head + "\n" + idea + "\n"
     if not idea.trade:
@@ -132,7 +134,7 @@ def _render_idea(item: Idea, equity: float | None, risk: float) -> str:
         if item.contracts == 0:
             size += "One unit risks more than the budget, so this idea doesn't fit at this size.\n"
     return (head + f"\n**Trade:** {idea.structure}, {premium} per unit. "
-            f"Max loss {_money(idea.max_loss)}, max gain {_money(idea.max_gain)} per unit. "
+            f"Max loss {_money(idea.max_loss)}, max gain {_money(max_gain(idea))} per unit. "
             f"Breakeven {idea.breakeven}.\n\n| Action | Ratio | Type | Strike | Expiry |\n|---|---|---|---|---|\n"
             f"{legs}\n{size}\n**Why:** {idea.rationale}\n\n**Exit:** {idea.exit_plan}\n\n"
             f"**Wrong if:** {idea.invalidation}\n")
@@ -160,7 +162,8 @@ def render_report(result: ScreenResult, equity: float | None = None, risk: float
 
 def save_report(result: ScreenResult, text: str, results_dir: str) -> Path:
     name = result.etf.replace(" ", "_")
-    path = Path(results_dir) / "screens" / f"{name}_{result.date}.md"
+    # The run time is in the name, so a second screen the same day doesn't overwrite the first.
+    path = Path(results_dir) / "screens" / f"{name}_{result.date}_{datetime.now():%H%M}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
     return path

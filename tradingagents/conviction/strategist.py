@@ -54,12 +54,14 @@ Screen's reason: {reason}
 Propose one options trade that expresses this view, using only the data below.
 
 Desk rules:
-- Defined risk only: long calls or puts, debit spreads, or credit spreads. Never naked short options.
+- Defined risk only. Never naked short options.
+- For a move up use calls: a long call, a bull call spread, or a bull put credit spread.
+- For a move down use puts: a long put, a bear put spread, or a bear call credit spread.
 - Expiry {min_dte} to {max_dte} days out, chosen from the expiries in the chain.
 - Use the strikes and bid/ask in the chain; price debits near the mid and say so.
-- When implied volatility is rich (high IV rank, or an expiry that spans earnings), prefer spreads to single long options.
+- Pick by implied volatility: with low IV rank a single long option is fine; by default use a debit spread; when IV is rich (high IV rank, or an expiry that spans earnings) prefer a credit spread, which sells that rich premium.
 - If the chain is unavailable or no structure fits, set trade to false and say why.
-- Give max loss and max gain per one unit of the structure in dollars (one contract is 100 shares).
+- Give max loss and max gain per one unit of the structure in dollars (one contract is 100 shares). Only a bought call that isn't sold back is uncapped; a long put's max gain is (strike - premium) x 100.
 
 {no_tools}
 
@@ -102,6 +104,21 @@ def gather(ticker: str, date: str) -> dict[str, str]:
         "activity": _data("get_options_activity", ticker, date),
         "flow": _data("get_options_flow", ticker, date, None, None),
     }
+
+
+def max_gain(idea: OptionsIdea) -> float | None:
+    """Per-unit max gain, worked out from the legs when the model left it blank.
+
+    An idea made only of puts is worth the most if the stock goes to zero, so
+    its gain is capped there: strikes bought minus strikes sold, less the net
+    premium paid. Only a structure with a call bought and not sold is uncapped.
+    """
+    if idea.max_gain is not None or not idea.legs:
+        return idea.max_gain
+    if all(leg.option_type == "put" for leg in idea.legs):
+        at_zero = sum((1 if leg.action == "buy" else -1) * leg.strike * leg.ratio for leg in idea.legs)
+        return round((at_zero - idea.net_premium) * 100, 2)
+    return None
 
 
 def contracts_for(idea: OptionsIdea, equity: float | None, risk_per_trade: float) -> int | None:

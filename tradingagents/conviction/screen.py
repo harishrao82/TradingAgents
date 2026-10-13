@@ -36,13 +36,13 @@ Below are the Benzinga articles about {ticker} published from {start} to {end}.
 Decide whether this news points to {ticker} moving up or down over the next one to six weeks, and how strongly.
 
 Conviction:
-5 - a fresh, material, company-specific catalyst that clearly points one way: earnings with a guidance change, a merger or buyout, a regulatory decision, a major contract won or lost, an accounting or legal shock.
+5 - a fresh, material, company-specific catalyst that clearly points one way. Up: earnings with a guidance raise, a buyout offer, an approval, a major contract won. Down: a guidance cut or earnings miss, a failed trial or rejected approval, a probe, lawsuit or accounting problem, a major customer or contract lost, a dilutive share sale.
 4 - a clear catalyst pointing one way, but smaller or partly priced in.
 3 - some signal, but mixed, stale or mostly about the sector rather than the company.
 2 - routine items: price-target changes, roundups, recaps of moves that already happened.
 1 - noise, or nothing about the company.
 
-Use direction "none" when the news does not point either way. Judge only from these articles; do not use other knowledge of the stock.
+Bad news counts as much as good news: score a clear negative catalyst "down" on the same scale. Use direction "none" when the news does not point either way. Judge only from these articles; do not use other knowledge of the stock.
 
 Answer with JSON only, no other text:
 {{"direction": "up" | "down" | "none", "conviction": 1-5, "catalyst": "...", "reason": "..."}}
@@ -138,9 +138,22 @@ def screen_news(llm, news_by_ticker: dict[str, str], start: str, end: str, worke
 
 
 def shortlist(verdicts: list[NewsVerdict], min_conviction: int, max_names: int,
-              weights: dict[str, float | None] | None = None) -> list[NewsVerdict]:
-    """Names with a direction and enough conviction, strongest first, then heaviest in the ETF."""
+              weights: dict[str, float | None] | None = None, direction: str = "both") -> list[NewsVerdict]:
+    """Names with a direction and enough conviction, strongest first, then heaviest in the ETF.
+
+    With ``direction="both"`` each side gets up to half the slots, so a run of
+    good news can't crowd out the put ideas; slots one side leaves empty go to
+    the other.
+    """
     weights = weights or {}
-    picked = [v for v in verdicts if v.direction != "none" and v.conviction >= min_conviction]
+    sides = ("up", "down") if direction == "both" else (direction,)
+    picked = [v for v in verdicts if v.direction in sides and v.conviction >= min_conviction]
     picked.sort(key=lambda v: (-v.conviction, -(weights.get(v.ticker) or 0)))
-    return picked[:max_names]
+    if len(sides) == 1:
+        return picked[:max_names]
+    by_side = {side: [v for v in picked if v.direction == side] for side in sides}
+    half = (max_names + 1) // 2
+    chosen = by_side["up"][:half] + by_side["down"][:half]
+    chosen += [v for v in picked if v not in chosen][: max(0, max_names - len(chosen))]
+    chosen = chosen[:max_names]
+    return sorted(chosen, key=lambda v: (v.direction != "up", -v.conviction, -(weights.get(v.ticker) or 0)))

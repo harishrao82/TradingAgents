@@ -11,7 +11,7 @@ import requests
 import tradingagents.default_config as default_config
 from tradingagents.conviction import screen as screen_mod, strategist as strategist_mod, workflow
 from tradingagents.conviction.screen import NewsVerdict, screen_news, shortlist
-from tradingagents.conviction.strategist import OptionLeg, OptionsIdea, contracts_for
+from tradingagents.conviction.strategist import OptionLeg, OptionsIdea, contracts_for, max_gain
 from tradingagents.dataflows.errors import NoMarketDataError
 from tradingagents.dataflows.vendors import alpaca, unusual_whales
 
@@ -114,9 +114,31 @@ def test_shortlist_keeps_strong_directional_calls_strongest_then_heaviest():
     verdicts = [_verdict("A", "up", 4), _verdict("B", "down", 5), _verdict("C", "none", 5),
                 _verdict("D", "up", 3), _verdict("E", "down", 4)]
 
-    picked = shortlist(verdicts, min_conviction=4, max_names=3, weights={"A": 1.0, "E": 2.0})
+    picked = shortlist(verdicts, min_conviction=4, max_names=3, weights={"A": 1.0, "E": 2.0}, direction="up")
 
-    assert [v.ticker for v in picked] == ["B", "E", "A"]
+    assert [v.ticker for v in picked] == ["A"]
+
+    picked = shortlist(verdicts, min_conviction=4, max_names=3, weights={"A": 1.0, "E": 2.0}, direction="down")
+
+    assert [v.ticker for v in picked] == ["B", "E"]
+
+
+def test_shortlist_saves_half_the_slots_for_each_side():
+    ups = [_verdict(f"U{i}", "up", 5) for i in range(6)]
+    downs = [_verdict(f"D{i}", "down", 4) for i in range(3)]
+
+    picked = shortlist(ups + downs, min_conviction=4, max_names=4)
+
+    # The weaker bearish calls still get two of the four slots, listed after the bullish ones.
+    assert [v.ticker for v in picked] == ["U0", "U1", "D0", "D1"]
+
+
+def test_shortlist_gives_unused_slots_to_the_other_side():
+    ups = [_verdict(f"U{i}", "up", 5) for i in range(6)]
+
+    picked = shortlist(ups + [_verdict("D0", "down", 4)], min_conviction=4, max_names=4)
+
+    assert [v.ticker for v in picked] == ["U0", "U1", "U2", "D0"]
 
 
 def _idea(max_loss=250.0, trade=True):
@@ -171,12 +193,12 @@ def test_full_screen_report(monkeypatch, tmp_path):
     assert result.universe == 3 and result.with_news == 2 and result.start == "2026-10-08"
     assert [v.ticker for v in result.shortlist] == ["AAPL"]
     assert "CHAIN" in strategist.prompts[0] and "Apple news" in strategist.prompts[0]
-    assert "## AAPL: up (conviction 5/5)" in text
+    assert "## AAPL: bullish (conviction 5/5)" in text
     assert "bull call spread, 2.50 debit" in text
     assert "| buy | 1 | call | 100 | 2026-11-20 |" in text
     assert "12 unit(s)" in text
     assert "no orders were placed" in text
-    assert path.name == "SPY_2026-10-12.md" and path.read_text() == text
+    assert path.name.startswith("SPY_2026-10-12_") and path.read_text() == text
 
 
 def test_screen_only_skips_the_strategist(monkeypatch):
@@ -245,3 +267,17 @@ def test_throttle_spaces_call_starts():
 
     assert slept == [2.0, 4.0]  # 30 a minute: one start every 2 seconds
     assert screen_mod.Throttle(0, sleep=slept.append).wait() is None and len(slept) == 2
+
+
+def _puts(*legs, premium):
+    return OptionsIdea(trade=True, structure="s", net_premium=premium, max_loss=1.0, rationale="r",
+                       legs=[OptionLeg(action=a, option_type="put", strike=k, expiration="2026-11-20") for a, k in legs])
+
+
+def test_put_ideas_have_a_capped_max_gain():
+    assert max_gain(_puts(("buy", 940), premium=55.90)) == 88_410.0  # a long put is worth the most at zero
+    assert max_gain(_puts(("buy", 225), ("sell", 215), premium=3.45)) == 655.0
+    long_call = OptionsIdea(trade=True, structure="long call", net_premium=5.0, max_loss=500.0, rationale="r",
+                            legs=[OptionLeg(action="buy", option_type="call", strike=100, expiration="2026-11-20")])
+    assert max_gain(long_call) is None
+    assert max_gain(_idea()) == 250.0  # the model's own figure is kept

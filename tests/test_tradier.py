@@ -23,6 +23,7 @@ def _token(monkeypatch):
     monkeypatch.setenv("TRADIER_ACCESS_TOKEN", "test-token")
     monkeypatch.delenv("TRADIER_SANDBOX", raising=False)
     monkeypatch.setattr(tradier, "is_historical", lambda date: date < TODAY)
+    monkeypatch.setattr(tradier, "_sleep", lambda seconds: None)
 
 
 def _option(kind, strike, bid, ask, delta, mid_iv, oi, expiration="2026-11-20"):
@@ -275,3 +276,25 @@ def test_second_timeout_is_unavailable(monkeypatch):
 
     with pytest.raises(VendorUnavailableError):
         tradier._request("markets/quotes", {})
+
+
+@pytest.mark.parametrize("statuses, ok", [([504, 200], True), ([502, 503, 200], True), ([504, 504, 504], False)])
+def test_gateway_errors_are_retried(monkeypatch, statuses, ok):
+    calls = []
+
+    def get(*a, **k):
+        response = mock.Mock(spec=requests.Response)
+        response.status_code = statuses[len(calls)]
+        calls.append(response.status_code)
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"ok": True}
+        return response
+
+    monkeypatch.setattr(tradier.requests, "get", get)
+
+    if ok:
+        assert tradier._request("markets/quotes", {}) == {"ok": True}
+    else:
+        with pytest.raises(VendorUnavailableError):
+            tradier._request("markets/quotes", {})
+    assert calls == statuses
