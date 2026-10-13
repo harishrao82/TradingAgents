@@ -228,6 +228,9 @@ class TestCalendars:
         assert "**Next report:** 2026-10-29, postmarket (confirmed by the company), 19 calendar days" in out
         assert "9.99" not in out and "50.0%" not in out
         assert "average absolute 1-day move 4.0% versus average implied move 4.5%" in out
+        with mock.patch.object(uw.requests, "get", side_effect=get):
+            assert uw.get_next_earnings("aapl", "2026-10-10") == ("2026-10-29", "postmarket")
+            assert uw.get_next_earnings("AAPL", "2026-10-29") is None
 
 
 @pytest.mark.unit
