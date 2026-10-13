@@ -112,6 +112,25 @@ class TestOptionsFlow:
         assert "Call/put premium ratio: 3.00" in out
         assert "999" not in out and "$9.00M" not in out
 
+    def test_a_full_page_is_followed_back_to_the_window_start(self):
+        def alert(i, day):
+            return {"id": f"a{i}", "created_at": f"{day}T15:{i % 60:02d}:00Z", "type": "call",
+                    "total_premium": "1000", "all_opening_trades": i % 2 == 0}
+        pages = [[alert(i, "2026-10-10") for i in range(uw.FLOW_PAGE_SIZE)],
+                 [alert(i, "2026-10-08") for i in range(1000, 1010)]]
+        calls = []
+
+        def get(url, params=None, headers=None, timeout=None):
+            calls.append(dict(params))
+            return _response(body={"data": pages[len(calls) - 1]})
+        with mock.patch.object(uw.requests, "get", side_effect=get):
+            out = uw.get_options_flow("AAPL", "2026-10-10")
+        assert len(calls) == 2
+        assert calls[1]["older_than"] == "2026-10-10T15:00:00Z"
+        assert f"Alerts: {uw.FLOW_PAGE_SIZE + 10} " in out
+        assert "only of opening trades: 105 of 210" in out
+        assert "cover only" not in out
+
     def test_no_alerts_is_not_read_as_no_activity(self):
         get, _ = _stub({"option-trades/flow-alerts": []})
         with mock.patch.object(uw.requests, "get", side_effect=get):
@@ -130,7 +149,9 @@ class TestOptionsActivity:
              "net_call_premium": "1000000", "net_put_premium": "-500000",
              "call_open_interest": 10, "put_open_interest": 20},
         ]
-        iv = [{"date": "2026-07-09", "volatility": "0.30", "iv_rank_1y": "0.20"},
+        # As served live: the rank on a 0-100 scale, volatility as a fraction, a year of rows.
+        iv = [{"date": "2025-10-10", "volatility": "0.50", "iv_rank_1y": "70.1"},
+              {"date": "2026-07-09", "volatility": "0.30", "iv_rank_1y": "20.0"},
               {"date": "2026-10-09", "volatility": "0.45", "iv_rank_1y": "0.85"}]
         get, _ = _stub({"stock/AAPL/options-volume": volume, "stock/AAPL/iv-rank": iv})
         with mock.patch.object(uw.requests, "get", side_effect=get):
@@ -138,13 +159,27 @@ class TestOptionsActivity:
         assert "Latest session (2026-10-09)" in out
         assert "2.0x its 30-day average" in out
         assert "put/call volume ratio 0.50" in out
-        assert "IV 45.0%, 1-year IV rank 85" in out
+        assert "IV 45.0%, 1-year IV rank 1 (" in out   # 0.85 on a 0-100 scale, not 85
+        assert "on 2026-07-09 IV was 30.0%" in out     # the row nearest three months back
         assert "2026-10-13" not in out
 
     def test_nothing_at_all_is_no_data(self):
         get, _ = _stub({"stock/AAPL/options-volume": [], "stock/AAPL/iv-rank": []})
         with mock.patch.object(uw.requests, "get", side_effect=get), pytest.raises(NoMarketDataError):
             uw.get_options_activity("AAPL", "2026-10-10")
+
+
+@pytest.mark.unit
+def test_market_tide_reads_its_eastern_timestamps_as_eastern_running_totals():
+    ticks = [
+        {"timestamp": "2026-10-12T09:30:00-04:00", "net_call_premium": "-17790938.0", "net_put_premium": "9489911.0", "net_volume": -42218},
+        {"timestamp": "2026-10-12T16:10:00-04:00", "net_call_premium": "-372698747.0", "net_put_premium": "-36382757.0", "net_volume": -249397},
+    ]
+    get, _ = _stub({"market/market-tide": ticks})
+    with mock.patch.object(uw.requests, "get", side_effect=get):
+        out = uw.get_market_tide("2026-10-12")
+    assert "Session total through 16:10 ET:** net call premium -$372.70M" in out
+    assert "| 09:30 | -$17.79M |" in out and "UTC" not in out
 
 
 @pytest.mark.unit
@@ -160,6 +195,15 @@ class TestCalendars:
             out = uw.get_economic_calendar("2026-10-10", today="2026-10-10")
         assert "| CPI | September | 0.3% | 0.4% |" in out
         assert "Old event" not in out
+
+    def test_economic_calendar_drops_the_duplicate_of_each_event(self):
+        event = {"event": "Existing Home Sales", "time": "2026-10-13T14:00:00Z", "type": "report",
+                 "reported_period": "September", "forecast": None, "prev": "4000000"}
+        get, _ = _stub({"market/economic-calendar": [event, dict(event)]})
+        with mock.patch.object(uw.requests, "get", side_effect=get):
+            out = uw.get_economic_calendar("2026-10-12", today="2026-10-12")
+        assert out.count("Existing Home Sales") == 1
+        assert "| September |  | 4.00M |" in out
 
     def test_economic_calendar_is_unavailable_for_a_historical_date(self):
         with mock.patch.object(uw.requests, "get") as get:
