@@ -12,7 +12,7 @@ or places orders.
 """
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 
@@ -217,15 +217,30 @@ def _is_monthly(date: str) -> bool:
     return day.weekday() == 4 and 15 <= day.day <= 21
 
 
-def _expiry_order(in_window: list) -> list:
-    """The order to try expiries in: the nearest, the monthlies, the furthest, then the rest.
+def _is_month_end(date: str) -> bool:
+    """Whether an expiry is the last weekday of its month, where index end-of-month options expire."""
+    day = datetime.strptime(date, "%Y-%m-%d")
+    following = day + timedelta(days=1 if day.weekday() < 4 else 7 - day.weekday())
+    return day.weekday() < 5 and following.month != day.month
 
-    Showing the first few dates would give three adjacent dailies on an index
-    and miss the monthly, where open interest is deepest.
+
+def _expiry_order(in_window: list) -> list:
+    """The order to try expiries in: the nearest, a middle one, the furthest, then the rest.
+
+    The middle pick is the standard monthly or month-end expiry closest to the
+    middle of the window, where open interest is deepest. Showing the first few
+    dates instead would give adjacent dailies on an index.
     """
     dates = [d for d, _ in in_window]
-    preferred = [dates[0], *[d for d in dates if _is_monthly(d)], dates[-1]]
-    order = list(dict.fromkeys(preferred + dates))
+    ordinal = {d: datetime.strptime(d, "%Y-%m-%d").toordinal() for d in dates}
+    middle = (ordinal[dates[0]] + ordinal[dates[-1]]) / 2
+
+    def distance(d):
+        return abs(ordinal[d] - middle)
+
+    anchors = sorted((d for d in dates[1:-1] if _is_monthly(d) or _is_month_end(d)), key=distance)
+    rest = sorted(dates, key=distance)
+    order = list(dict.fromkeys([dates[0], *anchors[:1], dates[-1], *anchors[1:], *rest]))
     by_date = dict(in_window)
     return [(d, by_date[d]) for d in order]
 

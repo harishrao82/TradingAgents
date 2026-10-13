@@ -110,7 +110,7 @@ class TestOptionChain:
             tradier.get_option_chain("AAPL", TODAY)
 
     def test_expiries_spread_across_the_window_with_the_monthly(self):
-        # Eight dailies 7-30 days out: show the nearest, the monthly and the furthest.
+        # Eight dailies 7-30 days out: show the nearest, the month-end and the furthest.
         dates = ("2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23",
                  "2026-10-26", "2026-10-30", "2026-11-06")
         monthly = ("2026-10-16",)  # third Friday of October falls before the window
@@ -118,8 +118,18 @@ class TestOptionChain:
         with mock.patch.object(tradier.requests, "get", side_effect=get):
             out = tradier.get_option_chain("SPY", TODAY, 7, 30)
         fetched = [p["expiration"] for _, path, p, _ in calls if path == "markets/options/chains"]
-        assert fetched == ["2026-10-19", "2026-11-06", "2026-10-20"]
-        assert out.index("### 2026-10-19") < out.index("### 2026-10-20") < out.index("### 2026-11-06")
+        assert fetched == ["2026-10-19", "2026-10-30", "2026-11-06"]
+        assert out.index("### 2026-10-19") < out.index("### 2026-10-30") < out.index("### 2026-11-06")
+
+    def test_a_skipped_expiry_is_replaced_by_the_next_closest_to_the_middle(self):
+        dates = ("2026-10-19", "2026-10-23", "2026-10-26", "2026-10-30", "2026-11-06")
+        chains = dict.fromkeys(dates, CHAIN)
+        chains["2026-10-30"] = [dict(o, open_interest=0) for o in CHAIN]
+        get, calls = _stub(chains, expirations=dates)
+        with mock.patch.object(tradier.requests, "get", side_effect=get):
+            tradier.get_option_chain("SPY", TODAY, 7, 30)
+        fetched = [p["expiration"] for _, path, p, _ in calls if path == "markets/options/chains"]
+        assert fetched == ["2026-10-19", "2026-10-30", "2026-11-06", "2026-10-26"]
 
     def test_a_monthly_in_the_window_is_preferred_over_adjacent_dates(self):
         dates = ("2026-10-26", "2026-10-30", "2026-11-06", "2026-11-20", "2026-12-04")
