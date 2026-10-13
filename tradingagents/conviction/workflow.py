@@ -89,7 +89,8 @@ def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> Scr
         screener, news, start, date, config["screen_workers"], per_minute=config["screen_requests_per_minute"],
         progress=lambda done, total, ticker: say(f"screened {done}/{total}") if done % 50 == 0 or done == total else None,
     )
-    picked = shortlist(verdicts, config["screen_min_conviction"], config["screen_max_names"], weights)
+    picked = shortlist(verdicts, config["screen_min_conviction"], config["screen_max_names"], weights,
+                       config["screen_direction"])
     say(f"{len(picked)} names on the short list: {', '.join(v.ticker for v in picked) or 'none'}")
 
     result = ScreenResult(etf=etf if not tickers else "custom list", date=date, start=start, universe=len(weights),
@@ -117,7 +118,8 @@ def _money(value: float | None) -> str:
 
 def _render_idea(item: Idea, equity: float | None, risk: float) -> str:
     v, idea = item.verdict, item.idea
-    head = f"## {v.ticker}: {v.direction} (conviction {v.conviction}/5)\n\n**Catalyst:** {v.catalyst}. {v.reason}\n"
+    side = "bullish" if v.direction == "up" else "bearish"
+    head = f"## {v.ticker}: {side} (conviction {v.conviction}/5)\n\n**Catalyst:** {v.catalyst}. {v.reason}\n"
     if isinstance(idea, str):
         return head + "\n" + idea + "\n"
     if not idea.trade:

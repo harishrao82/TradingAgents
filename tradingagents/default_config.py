@@ -166,6 +166,7 @@ def build_default_config() -> dict:
         "screen_articles_per_name": 8,
         "screen_min_conviction": 4,      # 1-5; a name needs this to reach the strategist
         "screen_max_names": 8,           # cap on the strategist's short list
+        "screen_direction": "both",      # both (half the slots each), up (calls only) or down (puts only)
         "screen_workers": 8,             # parallel screen calls
         "risk_per_trade": 0.03,          # max loss per idea, as a share of --equity
         # Data vendor configuration

@@ -54,10 +54,12 @@ Screen's reason: {reason}
 Propose one options trade that expresses this view, using only the data below.
 
 Desk rules:
-- Defined risk only: long calls or puts, debit spreads, or credit spreads. Never naked short options.
+- Defined risk only. Never naked short options.
+- For a move up use calls: a long call, a bull call spread, or a bull put credit spread.
+- For a move down use puts: a long put, a bear put spread, or a bear call credit spread.
 - Expiry {min_dte} to {max_dte} days out, chosen from the expiries in the chain.
 - Use the strikes and bid/ask in the chain; price debits near the mid and say so.
-- When implied volatility is rich (high IV rank, or an expiry that spans earnings), prefer spreads to single long options.
+- Pick by implied volatility: with low IV rank a single long option is fine; by default use a debit spread; when IV is rich (high IV rank, or an expiry that spans earnings) prefer a credit spread, which sells that rich premium.
 - If the chain is unavailable or no structure fits, set trade to false and say why.
 - Give max loss and max gain per one unit of the structure in dollars (one contract is 100 shares).
 
