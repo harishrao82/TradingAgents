@@ -387,3 +387,31 @@ def test_the_memory_step_reads_lessons_as_of_the_trade_date_and_settles_once(tmp
 
     assert asked == ["2026-01-20", "2026-01-20"]
     assert (tmp_path / "log.md").read_text() == log_after_first
+
+
+@pytest.mark.unit
+def test_the_options_desk_analysts_report_and_reach_the_debate(tmp_path, monkeypatch, offline):
+    model = ScriptedModel()
+    prompts = []
+    original = ScriptedModel._generate
+
+    def recording(self, messages, *a, **k):
+        prompts.append("\n".join(str(m.content) for m in messages))
+        return original(self, messages, *a, **k)
+
+    monkeypatch.setattr(ScriptedModel, "_generate", recording)
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg.update(results_dir=str(tmp_path / "results"), data_cache_dir=str(tmp_path / "cache"),
+               memory_log_path=str(tmp_path / "log.md"))
+    monkeypatch.setattr(trading_graph, "create_tier_client", lambda config, tier, **k: _Client(model))
+    graph = trading_graph.TradingAgentsGraph(
+        selected_analysts=["market", "options", "calendar"], config=cfg)
+
+    state, signal = graph.propagate("NVDA", TRADE_DATE)
+
+    assert signal == "Overweight"
+    assert state["options_report"].strip() and state["calendar_report"].strip()
+    assert {"get_options_flow", "get_options_activity", "get_market_tide",
+            "get_earnings_calendar", "get_economic_calendar"} <= offline
+    assert any("Bull Analyst" in p and "Options flow report: Report." in p for p in prompts)
+    assert any("Earnings and economic calendar report: Report." in p for p in prompts)

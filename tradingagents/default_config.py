@@ -164,6 +164,8 @@ def build_default_config() -> dict:
             "news_data": "yfinance",             # Options: alpha_vantage, yfinance
             "macro_data": "fred",                # Options: fred (needs FRED_API_KEY)
             "prediction_markets": "polymarket",  # Options: polymarket (keyless)
+            "options_data": "unusual_whales",    # Options: unusual_whales (needs UNUSUAL_WHALES_API_KEY)
+            "event_calendar": "unusual_whales",  # Options: unusual_whales (needs UNUSUAL_WHALES_API_KEY)
         },
         # Tool-level configuration (takes precedence over category-level)
         "tool_vendors": {

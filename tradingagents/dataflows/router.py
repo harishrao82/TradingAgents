@@ -26,6 +26,13 @@ from tradingagents.dataflows.vendors.sec_edgar import (
     get_cashflow as get_sec_edgar_cashflow,
     get_income_statement as get_sec_edgar_income_statement,
 )
+from tradingagents.dataflows.vendors.unusual_whales import (
+    get_earnings_calendar as get_unusual_whales_earnings_calendar,
+    get_economic_calendar as get_unusual_whales_economic_calendar,
+    get_market_tide as get_unusual_whales_market_tide,
+    get_options_activity as get_unusual_whales_options_activity,
+    get_options_flow as get_unusual_whales_options_flow,
+)
 from tradingagents.dataflows.vendors.yahoo.fundamentals import (
     get_balance_sheet as get_yfinance_balance_sheet,
     get_cashflow as get_yfinance_cashflow,
@@ -83,7 +90,22 @@ TOOLS_CATEGORIES = {
         "tools": [
             "get_prediction_markets",
         ]
-    }
+    },
+    "options_data": {
+        "description": "Options flow, volume, implied volatility and market-wide premium",
+        "tools": [
+            "get_options_flow",
+            "get_options_activity",
+            "get_market_tide",
+        ]
+    },
+    "event_calendar": {
+        "description": "Scheduled economic releases and company earnings dates",
+        "tools": [
+            "get_economic_calendar",
+            "get_earnings_calendar",
+        ]
+    },
 }
 
 # Optional enrichment categories. These add macro/event context to the news
@@ -91,7 +113,9 @@ TOOLS_CATEGORIES = {
 # sentinel instead of aborting the run (a bad LLM-supplied indicator, a missing
 # key, or a network blip should not crash an analysis over flavour data). Core
 # categories (prices, fundamentals, news) still raise so a broken primary is loud.
-OPTIONAL_CATEGORIES = {"macro_data", "prediction_markets"}
+# Options and calendar data come from a paid vendor a run may not have; without
+# it their analysts report the data unavailable rather than ending the run.
+OPTIONAL_CATEGORIES = {"macro_data", "prediction_markets", "options_data", "event_calendar"}
 
 # Mapping of methods to their vendor-specific implementations
 VENDOR_METHODS = {
@@ -145,6 +169,23 @@ VENDOR_METHODS = {
     # prediction_markets
     "get_prediction_markets": {
         "polymarket": get_polymarket_prediction_markets,
+    },
+    # options_data
+    "get_options_flow": {
+        "unusual_whales": get_unusual_whales_options_flow,
+    },
+    "get_options_activity": {
+        "unusual_whales": get_unusual_whales_options_activity,
+    },
+    "get_market_tide": {
+        "unusual_whales": get_unusual_whales_market_tide,
+    },
+    # event_calendar
+    "get_economic_calendar": {
+        "unusual_whales": get_unusual_whales_economic_calendar,
+    },
+    "get_earnings_calendar": {
+        "unusual_whales": get_unusual_whales_earnings_calendar,
     },
 }
 
