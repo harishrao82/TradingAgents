@@ -133,7 +133,9 @@ def build_instrument_context(
 
     identity = identity or {}
     name = identity.get("company_name") or identity.get("name")
-    label = "Name" if is_crypto else "Company"
+    # A fund stays a fund, so its type holds on any analysis date.
+    is_fund = not is_crypto and (identity.get("quote_type") or "").upper() in ("ETF", "MUTUALFUND")
+    label = "Name" if is_crypto else "Fund" if is_fund else "Company"
     details = []
     if is_historical(trade_date):
         if name:
@@ -165,6 +167,14 @@ def build_instrument_context(
         context += (
             " Treat it as a crypto asset rather than a company, and do not "
             "assume company fundamentals are available."
+        )
+    if is_fund:
+        context += (
+            " It is a fund, not a company: it has no earnings, balance sheet, "
+            "cash flow or insider filings of its own, so company fundamentals "
+            "tools returning nothing is expected. Judge it on its holdings and "
+            "the market it tracks (index valuation, earnings trend, breadth, "
+            "rates and macro), not as a single stock."
         )
     return context
 
