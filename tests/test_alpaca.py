@@ -74,7 +74,7 @@ def test_multi_ticker_article_is_flagged(monkeypatch):
 
     out = alpaca.get_news("AAPL", "2026-10-10", "2026-10-12")
 
-    assert "Tagged: NVDA, AMD, AAPL. Judge how much of it concerns AAPL." in out
+    assert "Tagged: AAPL, NVDA, AMD. Judge how much of it concerns AAPL." in out
 
 
 def test_articles_outside_the_window_are_dropped(monkeypatch):
@@ -90,13 +90,13 @@ def test_articles_outside_the_window_are_dropped(monkeypatch):
     assert "after the window" not in out
 
 
-def test_follows_page_tokens_until_limit(monkeypatch):
+def test_reads_every_page_then_keeps_the_newest(monkeypatch):
     config_module._config["news_article_limit"] = 3
     get, calls = _stub([
         {"news": [_article("One", "2026-10-12T10:00:00Z"), _article("Two", "2026-10-12T09:00:00Z")],
          "next_page_token": "abc"},
         {"news": [_article("Three", "2026-10-12T08:00:00Z"), _article("Four", "2026-10-12T07:00:00Z")],
-         "next_page_token": "def"},
+         "next_page_token": None},
     ])
     monkeypatch.setattr(alpaca.requests, "get", get)
 
@@ -105,6 +105,38 @@ def test_follows_page_tokens_until_limit(monkeypatch):
     assert len(calls) == 2
     assert calls[1]["page_token"] == "abc"
     assert "Three" in out and "Four" not in out
+
+
+def test_roundups_are_dropped_and_tag_note_is_capped(monkeypatch):
+    many = [f"T{i}" for i in range(30)]
+    get, _ = _stub([{"news": [
+        _article("95 Stocks Moving In Monday's Session", "2026-10-12T15:00:00Z", symbols=["AAPL", *many]),
+        _article("Big tech slides", "2026-10-12T14:00:00Z", symbols=["MSFT", "GOOG", "AAPL", "AMZN", "META",
+                                                                     "NVDA", "TSLA", "NFLX"]),
+    ]}])
+    monkeypatch.setattr(alpaca.requests, "get", get)
+
+    out = alpaca.get_news("AAPL", "2026-10-10", "2026-10-12")
+
+    assert "Stocks Moving" not in out
+    assert "Tagged: AAPL, MSFT, GOOG, AMZN, META, NVDA and 2 others." in out
+
+
+def test_articles_about_the_ticker_outrank_newer_shared_coverage(monkeypatch):
+    config_module._config["news_article_limit"] = 2
+    get, _ = _stub([{"news": [
+        _article("Chip stocks rally", "2026-10-12T15:00:00Z", symbols=("NVDA", "AMD", "AAPL")),
+        _article("Megacaps mixed", "2026-10-12T14:00:00Z", symbols=("MSFT", "AAPL", "GOOG")),
+        _article("AAPL and MSFT lead", "2026-10-11T14:00:00Z", symbols=("MSFT", "AAPL", "GOOG")),
+        _article("Apple raises buyback", "2026-10-07T14:00:00Z"),
+    ]}])
+    monkeypatch.setattr(alpaca.requests, "get", get)
+
+    out = alpaca.get_news("AAPL", "2026-10-06", "2026-10-12")
+
+    assert "Chip stocks" not in out and "Megacaps" not in out
+    # Shown newest first.
+    assert out.index("AAPL and MSFT lead") < out.index("Apple raises buyback")
 
 
 def test_no_articles_is_no_data(monkeypatch):

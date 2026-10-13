@@ -35,6 +35,12 @@ MAX_PAGES = 4
 # no reporting behind them.
 FILLER_AUTHORS = {"benzinga insights"}
 
+# Roundups ("95 Stocks Moving...") tag dozens of tickers and say a line about
+# each. Past this many tags an article is dropped from a ticker's news.
+MAX_TAGS = 10
+# The "Tagged:" note lists at most this many other tickers.
+TAG_NOTE_LIMIT = 5
+
 # Market-wide news: articles tagged with the main index and Treasury ETFs.
 MACRO_SYMBOLS = "SPY,QQQ,DIA,IWM,TLT"
 
@@ -74,8 +80,12 @@ def _request(params: dict) -> dict:
     return response.json() or {}
 
 
-def _fetch(start: datetime, end: datetime, symbols: str | None, limit: int) -> list:
-    """Articles created in ``[start, end)``, newest first, filler removed."""
+def _fetch(start: datetime, end: datetime, symbols: str | None, limit: int | None) -> list:
+    """Articles created in ``[start, end)``, newest first, filler removed.
+
+    Stops once ``limit`` articles are in hand; ``None`` reads every page up to
+    ``MAX_PAGES``.
+    """
     params = {
         "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -96,10 +106,30 @@ def _fetch(start: datetime, end: datetime, symbols: str | None, limit: int) -> l
                 continue
             articles.append(article)
         token = body.get("next_page_token")
-        if len(articles) >= limit or not token:
+        if (limit is not None and len(articles) >= limit) or not token:
             break
         params["page_token"] = token
-    return articles[:limit]
+    return articles if limit is None else articles[:limit]
+
+
+def _about(article: dict, ticker: str) -> bool:
+    """True when the article is mainly about ``ticker``: few tags, or named in the headline."""
+    symbols = article.get("symbols") or []
+    headline = _text(article.get("headline")).upper()
+    return len(symbols) <= 2 or re.search(rf"\b{re.escape(ticker)}\b", headline) is not None
+
+
+def _select(articles: list, ticker: str, limit: int) -> list:
+    """Up to ``limit`` articles, ones mainly about ``ticker`` first, shown newest first.
+
+    Articles come newest first, so a plain cut-off lets a few busy days of
+    multi-ticker coverage crowd out the rest of the window.
+    """
+    kept = [a for a in articles if len(a.get("symbols") or []) <= MAX_TAGS]
+    focused = [a for a in kept if _about(a, ticker)]
+    chosen = focused[:limit]
+    chosen += [a for a in kept if not _about(a, ticker)][: limit - len(chosen)]
+    return sorted(chosen, key=lambda a: _parse(a.get("created_at")), reverse=True)
 
 
 def _parse(value) -> datetime | None:
@@ -124,7 +154,11 @@ def _format(articles: list, ticker: str | None = None) -> str:
         if ticker and len(symbols) > 1:
             # Benzinga tags every ticker an article mentions, so a multi-ticker
             # piece may be mostly about something else.
-            lines.append(f"Tagged: {', '.join(symbols)}. Judge how much of it concerns {ticker}.")
+            others = [s for s in symbols if s != ticker]
+            tagged = ", ".join([ticker, *others[:TAG_NOTE_LIMIT]])
+            if len(others) > TAG_NOTE_LIMIT:
+                tagged += f" and {len(others) - TAG_NOTE_LIMIT} others"
+            lines.append(f"Tagged: {tagged}. Judge how much of it concerns {ticker}.")
         summary = _text(article.get("summary"))
         if summary:
             lines.append(summary)
@@ -139,7 +173,7 @@ def get_news(ticker: str, start_date: str, end_date: str) -> str:
     start = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC)
     end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC) + timedelta(days=1)
     symbol = ticker.upper()
-    articles = _fetch(start, end, symbol, get_config()["news_article_limit"])
+    articles = _select(_fetch(start, end, symbol, None), symbol, get_config()["news_article_limit"])
     if not articles:
         raise NoMarketDataError(symbol, detail=f"no Benzinga news between {start_date} and {end_date}")
     return f"## {symbol} news (Benzinga), from {start_date} to {end_date}:\n\n{_format(articles, symbol)}"
