@@ -96,6 +96,19 @@ class BuildInstrumentContextTests(unittest.TestCase):
         self.assertIn("Exchange: PNK", context)
         self.assertIn("Do not substitute a different company", context)
 
+    def test_a_fund_is_not_read_as_a_company(self):
+        context = build_instrument_context(
+            "SPY", "stock", {"company_name": "SPDR S&P 500 ETF", "quote_type": "ETF"}, "2026-10-12"
+        )
+        self.assertIn("Fund: SPDR S&P 500 ETF", context)
+        self.assertIn("It is a fund, not a company", context)
+        # Still said on a past date: a fund was a fund then too.
+        context = build_instrument_context("SPY", "stock", {"quote_type": "ETF"}, "2020-01-02")
+        self.assertIn("It is a fund, not a company", context)
+        context = build_instrument_context("AAPL", "stock", {"company_name": "Apple Inc.", "quote_type": "EQUITY"})
+        self.assertIn("Company: Apple Inc.", context)
+        self.assertNotIn("fund", context)
+
     def test_crypto_uses_name_label_and_keeps_hint(self):
         context = build_instrument_context(
             "BTC-USD", "crypto", {"company_name": "Bitcoin USD"}
