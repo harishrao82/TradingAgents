@@ -179,6 +179,8 @@ export NVIDIA_API_KEY=...          # NVIDIA NIM
 export FRED_API_KEY=...            # FRED macro data (free, optional)
 export UNUSUAL_WHALES_API_KEY=...  # Options flow and event calendars (optional; options and calendar analysts)
 export TRADIER_ACCESS_TOKEN=...    # Live option chains with greeks (optional; options analyst)
+export ALPACA_API_KEY=...          # Benzinga news via Alpaca (optional; with ALPACA_SECRET_KEY)
+export ALPACA_SECRET_KEY=...
 export ALPHA_VANTAGE_API_KEY=...   # Alpha Vantage
 export TYPESAFE_API_KEY=...        # Jev social-post screening (optional)
 ```
