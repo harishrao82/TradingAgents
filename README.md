@@ -382,7 +382,7 @@ Each cell is scored on realized alpha against the instrument's regional benchmar
 
 ## Conviction screen
 
-`tradingagents screen` looks for a few high-conviction options ideas in an ETF's holdings. The holdings list comes from Unusual Whales. A cheap model reads each name's Benzinga news from the last three weekdays; by default this is Gemini Flash on OpenRouter, set by `screen_llm`. It flags the names whose news points up or down with conviction. The deep model tier then suggests a defined-risk options trade, 14-60 days out, for each flagged name. It reads the live Tradier chain, IV rank and options flow to do so.
+`tradingagents screen` looks for a few high-conviction options ideas in an ETF's holdings. The holdings list comes from Unusual Whales. A cheap model reads each name's Benzinga news from the last three weekdays; by default this is Claude Haiku, set by `screen_llm`. Gemini Flash on OpenRouter also works, with `screen_requests_per_minute` set to stay under OpenRouter's rate limit. It flags the names whose news points up or down with conviction. The deep model tier then suggests a defined-risk options trade, 14-60 days out, for each flagged name. It reads the live Tradier chain, IV rank and options flow to do so.
 
 ```bash
 tradingagents screen SPY --equity 200000      # size each idea to 3% of equity
@@ -390,7 +390,7 @@ tradingagents screen SPY --screen-only        # the news screen alone
 tradingagents screen --tickers LITE,NVDA      # a hand-picked list instead of an ETF
 ```
 
-The report is saved under `results_dir/screens/`. It needs `UNUSUAL_WHALES_API_KEY`, the Alpaca key pair, `OPENROUTER_API_KEY` and `TRADIER_ACCESS_TOKEN`. It is analysis only and places no orders.
+The report is saved under `results_dir/screens/`. It needs `UNUSUAL_WHALES_API_KEY`, the Alpaca key pair, `ANTHROPIC_API_KEY` (or `OPENROUTER_API_KEY` for an OpenRouter screener) and `TRADIER_ACCESS_TOKEN`. It is analysis only and places no orders.
 
 ## Reproducibility
 

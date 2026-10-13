@@ -26,12 +26,15 @@ def _response(body, status=200):
 
 def test_etf_holdings_keep_stocks_heaviest_first(monkeypatch):
     monkeypatch.setenv("UNUSUAL_WHALES_API_KEY", "k")
+    seen = {}
     rows = [{"ticker": "MSFT", "weight": "6.5"}, {"ticker": "AAPL", "weight": "7.1"},
             {"ticker": "BRK.B", "weight": "1.6"}, {"ticker": "", "weight": "0.2"},
             {"ticker": "USD CASH", "weight": "0.1"}]
-    monkeypatch.setattr(unusual_whales.requests, "get", lambda *a, **k: _response({"data": rows}))
+    monkeypatch.setattr(unusual_whales.requests, "get",
+                        lambda url, params=None, **k: seen.update(params) or _response({"data": rows}))
 
     assert unusual_whales.get_etf_holdings("spy") == [("AAPL", 7.1), ("MSFT", 6.5), ("BRK.B", 1.6)]
+    assert seen["limit"] >= 600  # the endpoint returns only 250 rows by default
 
 
 def test_etf_without_holdings_is_no_data(monkeypatch):
@@ -93,11 +96,14 @@ def test_screen_reads_json_and_records_failures():
     })
     news = dict.fromkeys(("AAPL", "MSFT", "NVDA", "TSLA"), "news")
 
-    verdicts, failures = screen_news(llm, news, "2026-10-10", "2026-10-12", workers=2)
+    pauses = []
+
+    verdicts, failures = screen_news(llm, news, "2026-10-10", "2026-10-12", workers=2, sleep=pauses.append)
 
     assert [(v.ticker, v.direction, v.conviction) for v in verdicts] == [("AAPL", "up", 5)]
     assert set(failures) == {"MSFT", "NVDA", "TSLA"}
-    assert "429" in failures["TSLA"]
+    assert failures["TSLA"] == "rate limited (429)"
+    assert pauses == [4, 8, 16, 32]  # four retries with a growing pause, then it gives up
 
 
 def _verdict(ticker, direction, conviction):
@@ -196,3 +202,46 @@ def test_news_window_counts_weekdays():
     assert workflow._weekdays_back("2026-10-12", 3) == "2026-10-08"  # Monday reaches back to Thursday
     assert workflow._weekdays_back("2026-10-14", 3) == "2026-10-12"
     assert workflow._weekdays_back("2026-10-14", 1) == "2026-10-14"
+
+
+class _Flaky:
+    """Rate-limited on the first call, then answers."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def invoke(self, prompt):
+        self.calls += 1
+        if self.calls == 1:
+            error = RuntimeError('Error code: 429 - {"error": {"metadata": {"user_id": "user_secret"}}}')
+            error.status_code = 429
+            raise error
+        return SimpleNamespace(content='{"direction": "up", "conviction": 4, "catalyst": "c", "reason": "r"}')
+
+
+def test_rate_limited_call_is_retried():
+    llm = _Flaky()
+    verdicts, failures = screen_news(llm, {"AAPL": "news"}, "2026-10-10", "2026-10-12", workers=1, sleep=lambda s: None)
+
+    assert llm.calls == 2 and not failures and verdicts[0].conviction == 4
+
+
+def test_failure_reason_is_one_short_line_without_the_error_body():
+    error = RuntimeError('Error code: 400 - {"error": {"metadata": {"user_id": "user_secret"}}}')
+    error.status_code = 400
+
+    reason = screen_mod._short(error)
+
+    assert "user_secret" not in reason and "{" not in reason
+    assert reason == "RuntimeError 400: Error code: 400 -"
+
+
+def test_throttle_spaces_call_starts():
+    now, slept = [100.0], []
+    throttle = screen_mod.Throttle(30, clock=lambda: now[0], sleep=slept.append)
+
+    for _ in range(3):
+        throttle.wait()
+
+    assert slept == [2.0, 4.0]  # 30 a minute: one start every 2 seconds
+    assert screen_mod.Throttle(0, sleep=slept.append).wait() is None and len(slept) == 2

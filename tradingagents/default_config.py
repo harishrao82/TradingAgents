@@ -27,6 +27,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_MAX_TOKENS":           "max_tokens",
     "TRADINGAGENTS_SCREEN_LLM_PROVIDER":  "screen_llm_provider",
     "TRADINGAGENTS_SCREEN_LLM":           "screen_llm",
+    "TRADINGAGENTS_SCREEN_RPM":           "screen_requests_per_minute",
     # Provider-specific reasoning/thinking knobs (None = each provider's own
     # default). Settable here for non-interactive runs; the CLI also offers an
     # interactive choice, which is skipped when the matching var is set.
@@ -155,8 +156,12 @@ def build_default_config() -> dict:
         # Conviction screen (`tradingagents screen`): a cheap model reads the news
         # on every name in an ETF, and the deep tier suggests an options trade for
         # each name the news points up or down with conviction. Analysis only.
-        "screen_llm_provider": "openrouter",       # needs OPENROUTER_API_KEY
-        "screen_llm": "google/gemini-3.8-flash",
+        # Haiku by default: a new OpenRouter account allows about 20 requests a
+        # minute, too few for ~500 names. For Gemini Flash set provider
+        # "openrouter", model "google/gemini-3.8-flash" and a per-minute cap.
+        "screen_llm_provider": "anthropic",
+        "screen_llm": "claude-haiku-4-5",
+        "screen_requests_per_minute": 0, # 0 = no cap; rate-limit errors are retried either way
         "screen_lookback_days": 3,       # weekdays of news, ending on the screen date
         "screen_articles_per_name": 8,
         "screen_min_conviction": 4,      # 1-5; a name needs this to reach the strategist

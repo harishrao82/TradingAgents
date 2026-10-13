@@ -86,7 +86,7 @@ def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> Scr
 
     screener, strategist = llms or (screen_llm(config), None)
     verdicts, failures = screen_news(
-        screener, news, start, date, config["screen_workers"],
+        screener, news, start, date, config["screen_workers"], per_minute=config["screen_requests_per_minute"],
         progress=lambda done, total, ticker: say(f"screened {done}/{total}") if done % 50 == 0 or done == total else None,
     )
     picked = shortlist(verdicts, config["screen_min_conviction"], config["screen_max_names"], weights)

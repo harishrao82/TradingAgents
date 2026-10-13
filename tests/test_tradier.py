@@ -246,3 +246,32 @@ def test_the_chain_tool_passes_the_next_earnings_date(monkeypatch):
                         lambda method, *args: calls.append((method, args)) or "DATA_UNAVAILABLE: x")
     tools.get_option_chain.func("AAPL", TODAY, None, None, TODAY)
     assert calls[-1] == ("get_option_chain", ("AAPL", TODAY, None, None, None, None))
+
+
+def test_read_timeout_is_retried_once(monkeypatch):
+    calls = []
+
+    def get(url, params=None, headers=None, timeout=None):
+        calls.append(url)
+        if len(calls) == 1:
+            raise requests.Timeout("read timed out")
+        response = mock.Mock(spec=requests.Response)
+        response.status_code = 200
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"ok": True}
+        return response
+
+    monkeypatch.setattr(tradier.requests, "get", get)
+
+    assert tradier._request("markets/quotes", {}) == {"ok": True}
+    assert len(calls) == 2
+
+
+def test_second_timeout_is_unavailable(monkeypatch):
+    def get(*a, **k):
+        raise requests.Timeout("read timed out")
+
+    monkeypatch.setattr(tradier.requests, "get", get)
+
+    with pytest.raises(VendorUnavailableError):
+        tradier._request("markets/quotes", {})

@@ -47,6 +47,9 @@ CALENDAR_HISTORY_DAYS = 7
 FLOW_PAGE_SIZE = 200
 FLOW_MAX_PAGES = 5
 
+# More rows than any ETF the screen reads holds.
+ETF_HOLDINGS_LIMIT = 1000
+
 # Market Tide timestamps carry the exchange's offset; the table reads in ET.
 MARKET_TZ = pytz.timezone("America/New_York")
 
@@ -479,7 +482,8 @@ def get_etf_holdings(etf: str) -> list[tuple[str, float | None]]:
     uses the current constituents. Rows without a ticker (cash, futures) are
     dropped.
     """
-    rows = _request(f"etfs/{etf.upper()}/holdings")
+    # The endpoint returns 250 rows unless asked for more; SPY holds about 504.
+    rows = _request(f"etfs/{etf.upper()}/holdings", {"limit": ETF_HOLDINGS_LIMIT})
     holdings = {}
     for row in rows:
         ticker = str(row.get("ticker") or row.get("symbol") or "").strip().upper()

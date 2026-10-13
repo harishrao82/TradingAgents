@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal
 
@@ -64,18 +66,64 @@ def screen_one(llm, ticker: str, news: str, start: str, end: str) -> NewsVerdict
     return _parse(content, ticker)
 
 
+RETRIES = 5
+BACKOFF_SECONDS = 4
+
+
+def _rate_limited(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    return status == 429 or "RateLimit" in type(exc).__name__ or "429" in str(exc)[:200]
+
+
+def _short(exc: Exception) -> str:
+    """One line on why a call failed; provider error bodies can carry account ids."""
+    if _rate_limited(exc):
+        return "rate limited (429)"
+    status = getattr(exc, "status_code", None)
+    first = str(exc).split("\n", 1)[0].split("{", 1)[0].strip()[:120]
+    return f"{type(exc).__name__}{f' {status}' if status else ''}: {first}".rstrip(": ")
+
+
+class Throttle:
+    """Spaces call starts so all workers together stay under ``per_minute``; 0 means no cap."""
+
+    def __init__(self, per_minute: int, clock=time.monotonic, sleep=time.sleep):
+        self.gap = 60.0 / per_minute if per_minute else 0.0
+        self.clock, self.sleep, self.lock, self.next = clock, sleep, threading.Lock(), 0.0
+
+    def wait(self):
+        if not self.gap:
+            return
+        with self.lock:
+            now = self.clock()
+            start = max(now, self.next)
+            self.next = start + self.gap
+        if start > now:
+            self.sleep(start - now)
+
+
 def screen_news(llm, news_by_ticker: dict[str, str], start: str, end: str, workers: int = 8,
-                progress=None) -> tuple[list[NewsVerdict], dict[str, str]]:
-    """Screen every name's news; returns the verdicts and the names that failed, with why."""
+                progress=None, per_minute: int = 0, sleep=time.sleep) -> tuple[list[NewsVerdict], dict[str, str]]:
+    """Screen every name's news; returns the verdicts and the names that failed, with why.
+
+    A rate-limited call is retried with a growing pause; ``per_minute`` caps how
+    often calls start across all workers.
+    """
     verdicts, failures = [], {}
+    throttle = Throttle(per_minute, sleep=sleep)
 
     def run(ticker):
-        try:
-            return ticker, screen_one(llm, ticker, news_by_ticker[ticker], start, end), None
-        except (ValidationError, ValueError) as exc:
-            return ticker, None, f"unreadable answer: {exc}"
-        except Exception as exc:  # one name's failed call must not stop the screen
-            return ticker, None, str(exc)
+        for attempt in range(RETRIES):
+            throttle.wait()
+            try:
+                return ticker, screen_one(llm, ticker, news_by_ticker[ticker], start, end), None
+            except (ValidationError, ValueError) as exc:
+                return ticker, None, f"unreadable answer: {str(exc)[:120]}"
+            except Exception as exc:  # one name's failed call must not stop the screen
+                if _rate_limited(exc) and attempt < RETRIES - 1:
+                    sleep(BACKOFF_SECONDS * 2 ** attempt)
+                    continue
+                return ticker, None, _short(exc)
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         for done, (ticker, verdict, error) in enumerate(pool.map(run, news_by_ticker), 1):
