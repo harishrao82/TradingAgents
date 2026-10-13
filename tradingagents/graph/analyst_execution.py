@@ -1,7 +1,13 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from tradingagents.agents.analysts import fundamentals_analyst, market_analyst, news_analyst
+from tradingagents.agents.analysts import (
+    event_calendar_analyst,
+    fundamentals_analyst,
+    market_analyst,
+    news_analyst,
+    options_flow_analyst,
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +48,18 @@ ANALYST_NODE_SPECS: dict[str, AnalystNodeSpec] = {
         agent_node="Fundamentals Analyst",
         report_key="fundamentals_report",
         tools=fundamentals_analyst.TOOLS,
+    ),
+    "options": AnalystNodeSpec(
+        key="options",
+        agent_node="Options Flow Analyst",
+        report_key="options_report",
+        tools=options_flow_analyst.TOOLS,
+    ),
+    "calendar": AnalystNodeSpec(
+        key="calendar",
+        agent_node="Event Calendar Analyst",
+        report_key="calendar_report",
+        tools=event_calendar_analyst.TOOLS,
     ),
 }
 

@@ -38,6 +38,8 @@ class MessageBuffer:
         "social": "Sentiment Analyst",
         "news": "News Analyst",
         "fundamentals": "Fundamentals Analyst",
+        "options": "Options Flow Analyst",
+        "calendar": "Event Calendar Analyst",
     }
 
     # Report section mapping: section -> (analyst_key for filtering, finalizing_agent)
@@ -48,6 +50,8 @@ class MessageBuffer:
         "sentiment_report": ("social", "Sentiment Analyst"),
         "news_report": ("news", "News Analyst"),
         "fundamentals_report": ("fundamentals", "Fundamentals Analyst"),
+        "options_report": ("options", "Options Flow Analyst"),
+        "calendar_report": ("calendar", "Event Calendar Analyst"),
         "investment_plan": (None, "Research Manager"),
         "trader_investment_plan": (None, "Trader"),
         "final_trade_decision": (None, "Portfolio Manager"),
@@ -145,6 +149,8 @@ class MessageBuffer:
                 "sentiment_report": "Social Sentiment",
                 "news_report": "News Analysis",
                 "fundamentals_report": "Fundamentals Analysis",
+                "options_report": "Options Flow Analysis",
+                "calendar_report": "Event Calendar",
                 "investment_plan": "Research Team Decision",
                 "trader_investment_plan": "Trading Team Plan",
                 "final_trade_decision": "Portfolio Management Decision",
@@ -214,6 +220,8 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
             "Sentiment Analyst",
             "News Analyst",
             "Fundamentals Analyst",
+            "Options Flow Analyst",
+            "Event Calendar Analyst",
         ],
         "Research Team": ["Bull Researcher", "Bear Researcher", "Research Manager"],
         "Trading Team": ["Trader"],
@@ -391,6 +399,10 @@ def display_complete_report(final_state):
         analysts.append(("News Analyst", final_state["news_report"]))
     if final_state.get("fundamentals_report"):
         analysts.append(("Fundamentals Analyst", final_state["fundamentals_report"]))
+    if final_state.get("options_report"):
+        analysts.append(("Options Flow Analyst", final_state["options_report"]))
+    if final_state.get("calendar_report"):
+        analysts.append(("Event Calendar Analyst", final_state["calendar_report"]))
     if analysts:
         console.print(Panel("[bold]I. Analyst Team Reports[/bold]", border_style="cyan"))
         for title, content in analysts:
@@ -445,13 +457,15 @@ def update_research_team_status(status):
 
 
 # Ordered list of analysts for status transitions
-ANALYST_ORDER = ["market", "social", "news", "fundamentals"]
+ANALYST_ORDER = ["market", "social", "news", "fundamentals", "options", "calendar"]
 
 ANALYST_AGENT_NAMES = {
     "market": "Market Analyst",
     "social": "Sentiment Analyst",
     "news": "News Analyst",
     "fundamentals": "Fundamentals Analyst",
+    "options": "Options Flow Analyst",
+    "calendar": "Event Calendar Analyst",
 }
 
 ANALYST_REPORT_MAP = {
@@ -459,6 +473,8 @@ ANALYST_REPORT_MAP = {
     "social": "sentiment_report",
     "news": "news_report",
     "fundamentals": "fundamentals_report",
+    "options": "options_report",
+    "calendar": "calendar_report",
 }
 
 

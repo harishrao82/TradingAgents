@@ -11,10 +11,12 @@ from tradingagents.agents import (
     create_bear_researcher,
     create_bull_researcher,
     create_conservative_debator,
+    create_event_calendar_analyst,
     create_fundamentals_analyst,
     create_market_analyst,
     create_neutral_debator,
     create_news_analyst,
+    create_options_flow_analyst,
     create_portfolio_manager,
     create_research_manager,
     create_sentiment_analyst,
@@ -117,6 +119,8 @@ class GraphSetup:
                 - "social": Sentiment analyst
                 - "news": News analyst
                 - "fundamentals": Fundamentals analyst
+                - "options": Options flow analyst (Unusual Whales)
+                - "calendar": Event calendar analyst, earnings and economic events (Unusual Whales)
             memory_node: Node that settles past decisions and returns the run's
                 ``past_context``. It runs alongside the analysts.
         """
@@ -127,6 +131,8 @@ class GraphSetup:
             "social": lambda: create_sentiment_analyst(self.quick_thinking_llm),
             "news": lambda: create_news_analyst(self.quick_thinking_llm),
             "fundamentals": lambda: create_fundamentals_analyst(self.quick_thinking_llm),
+            "options": lambda: create_options_flow_analyst(self.quick_thinking_llm),
+            "calendar": lambda: create_event_calendar_analyst(self.quick_thinking_llm),
         }
 
         bull_researcher_node = create_bull_researcher(self.quick_thinking_llm)

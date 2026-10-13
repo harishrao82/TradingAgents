@@ -289,3 +289,107 @@ def get_prediction_markets(
         str: A formatted markdown report of matching prediction markets
     """
     return route_to_vendor("get_prediction_markets", topic, limit, trade_date or None)
+
+
+@tool
+def get_options_flow(
+    symbol: Annotated[str, InjectedState("company_of_interest")],
+    curr_date: Annotated[str, "Current date in yyyy-mm-dd format; the end of the window"],
+    look_back_days: Annotated[int | None, "Days of alerts to read; omit for 5"] = None,
+    min_premium: Annotated[int | None, "Only alerts with at least this premium in dollars"] = None,
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> str:
+    """
+    Retrieve unusual options flow alerts (sweeps, floor trades, repeated hits) for
+    the instrument under analysis: call versus put premium, ask- versus bid-side
+    premium, and the largest alerts with strike, expiry, size and volume/open
+    interest. Uses the configured options_data vendor.
+
+    Args:
+        curr_date (str): Current date in yyyy-mm-dd format
+        look_back_days (int): Days of alerts to read; omit for 5
+        min_premium (int): Minimum premium per alert in dollars
+
+    Returns:
+        str: A markdown summary and table of the flow alerts
+    """
+    return route_to_vendor("get_options_flow", symbol, as_of(curr_date, trade_date), look_back_days, min_premium)
+
+
+@tool
+def get_options_activity(
+    symbol: Annotated[str, InjectedState("company_of_interest")],
+    curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> str:
+    """
+    Retrieve daily options volume, premium and open interest for the instrument
+    under analysis, compared with its 30-day average, plus its implied volatility
+    and 1-year IV rank. Uses the configured options_data vendor.
+
+    Args:
+        curr_date (str): Current date in yyyy-mm-dd format
+
+    Returns:
+        str: A markdown report of options activity and implied volatility
+    """
+    return route_to_vendor("get_options_activity", symbol, as_of(curr_date, trade_date))
+
+
+@tool
+def get_market_tide(
+    curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> str:
+    """
+    Retrieve Market Tide: net call and net put premium across all US-listed
+    options through the session, a read of market-wide options positioning.
+    Uses the configured options_data vendor.
+
+    Args:
+        curr_date (str): Current date in yyyy-mm-dd format
+
+    Returns:
+        str: A markdown report of the session's net premium
+    """
+    return route_to_vendor("get_market_tide", as_of(curr_date, trade_date))
+
+
+@tool
+def get_economic_calendar(
+    curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> str:
+    """
+    Retrieve the scheduled economic calendar from the current date on: economic
+    reports with forecast and previous values, FOMC meetings and Fed speakers.
+    Covers the current and next week. Uses the configured event_calendar vendor.
+
+    Args:
+        curr_date (str): Current date in yyyy-mm-dd format
+
+    Returns:
+        str: A markdown table of upcoming events
+    """
+    return route_to_vendor("get_economic_calendar", as_of(curr_date, trade_date))
+
+
+@tool
+def get_earnings_calendar(
+    symbol: Annotated[str, InjectedState("company_of_interest")],
+    curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> str:
+    """
+    Retrieve the next scheduled earnings report for the instrument under analysis
+    and its recent reports: EPS against estimate, the implied move against the
+    realised 1-day move, and straddle returns. Uses the configured
+    event_calendar vendor.
+
+    Args:
+        curr_date (str): Current date in yyyy-mm-dd format
+
+    Returns:
+        str: A markdown report of upcoming and past earnings
+    """
+    return route_to_vendor("get_earnings_calendar", symbol, as_of(curr_date, trade_date))

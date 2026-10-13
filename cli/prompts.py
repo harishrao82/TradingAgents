@@ -19,6 +19,8 @@ ANALYST_CHOICES = [
     ("Sentiment Analyst", AnalystType.SOCIAL),
     ("News Analyst", AnalystType.NEWS),
     ("Fundamentals Analyst", AnalystType.FUNDAMENTALS),
+    ("Options Flow Analyst", AnalystType.OPTIONS),
+    ("Event Calendar Analyst", AnalystType.CALENDAR),
 ]
 
 CRYPTO_SUFFIXES = ("-USD", "-USDT", "-USDC", "-BTC", "-ETH")
@@ -129,10 +131,12 @@ def filter_analysts_for_asset_type(
 ) -> list[AnalystType]:
     if asset_type != AssetType.CRYPTO:
         return analysts
+    # Fundamentals, listed options and company earnings are stock concepts.
+    stock_only = {AnalystType.FUNDAMENTALS, AnalystType.OPTIONS, AnalystType.CALENDAR}
     return [
         analyst
         for analyst in analysts
-        if analyst != AnalystType.FUNDAMENTALS
+        if analyst not in stock_only
     ]
 
 

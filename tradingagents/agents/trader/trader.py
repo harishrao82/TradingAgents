@@ -8,6 +8,7 @@ from tradingagents.agents.context import (
     get_instrument_context_from_state,
     get_language_instruction,
     get_portfolio_context_from_state,
+    options_desk_reports,
 )
 from tradingagents.agents.schemas import TraderProposal, render_trader_proposal
 from tradingagents.agents.structured import (
@@ -42,6 +43,15 @@ def create_trader(llm):
         else:
             grounding = ""
             report_section = ""
+        # Options positioning and the event calendar bear on timing and on the
+        # expiry an options trade would need; offered only when those analysts ran.
+        desk_reports = options_desk_reports(state)
+        if desk_reports:
+            grounding += (
+                "Time the entry around the scheduled events in the calendar report, and "
+                "say whether options positioning supports or contradicts the plan. "
+            )
+            report_section += f"{desk_reports}\n\n"
 
         messages = [
             {

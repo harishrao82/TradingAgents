@@ -201,6 +201,24 @@ def report_or_absent(text: str, source: str) -> str:
     return f"(No {source} report in this run: it is not available, not an empty finding.)"
 
 
+def options_desk_reports(state: Mapping[str, Any]) -> str:
+    """The options flow and event calendar reports, as labelled lines, or "".
+
+    These analysts are opt-in, so a run that did not select them adds nothing
+    here: no section is shown empty, and the prompts of runs without them stay
+    as they were.
+    """
+    lines = []
+    for key, label in (
+        ("options_report", "Options flow report"),
+        ("calendar_report", "Earnings and economic calendar report"),
+    ):
+        text = (state.get(key) or "").strip()
+        if text:
+            lines.append(f"{label}: {text}")
+    return "\n".join(lines)
+
+
 def get_portfolio_context_from_state(state: Mapping[str, Any]) -> str:
     """Return the caller's portfolio block, or a notice that none was given.
 

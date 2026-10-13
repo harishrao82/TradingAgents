@@ -1,6 +1,8 @@
+from .analysts.event_calendar_analyst import create_event_calendar_analyst
 from .analysts.fundamentals_analyst import create_fundamentals_analyst
 from .analysts.market_analyst import create_market_analyst
 from .analysts.news_analyst import create_news_analyst
+from .analysts.options_flow_analyst import create_options_flow_analyst
 from .analysts.sentiment_analyst import create_sentiment_analyst
 from .managers.portfolio_manager import create_portfolio_manager
 from .managers.research_manager import create_research_manager
@@ -19,10 +21,12 @@ __all__ = [
     "create_bear_researcher",
     "create_bull_researcher",
     "create_research_manager",
+    "create_event_calendar_analyst",
     "create_fundamentals_analyst",
     "create_market_analyst",
     "create_neutral_debator",
     "create_news_analyst",
+    "create_options_flow_analyst",
     "create_aggressive_debator",
     "create_portfolio_manager",
     "create_conservative_debator",
