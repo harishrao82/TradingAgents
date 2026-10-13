@@ -29,11 +29,11 @@ def test_etf_holdings_keep_stocks_heaviest_first(monkeypatch):
     seen = {}
     rows = [{"ticker": "MSFT", "weight": "6.5"}, {"ticker": "AAPL", "weight": "7.1"},
             {"ticker": "BRK.B", "weight": "1.6", "sector": "Financial Services"}, {"ticker": "", "weight": "0.2"},
-            {"ticker": "USD CASH", "weight": "0.1"}]
+            {"ticker": "USD CASH", "weight": "0.1"}, {"ticker": "BFB", "weight": "0.01"}]
     monkeypatch.setattr(unusual_whales.requests, "get",
                         lambda url, params=None, **k: seen.update(params) or _response({"data": rows}))
 
-    assert unusual_whales.get_etf_holdings("spy") == [("AAPL", 7.1), ("MSFT", 6.5), ("BRK.B", 1.6)]
+    assert unusual_whales.get_etf_holdings("spy") == [("AAPL", 7.1), ("MSFT", 6.5), ("BRK.B", 1.6), ("BF.B", 0.01)]
     assert unusual_whales.get_etf_constituents("spy")[2] == ("BRK.B", 1.6, "Financial Services")
     assert seen["limit"] >= 600  # the endpoint returns only 250 rows by default
 

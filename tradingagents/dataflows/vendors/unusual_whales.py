@@ -49,6 +49,8 @@ FLOW_MAX_PAGES = 5
 
 # More rows than any ETF the screen reads holds.
 ETF_HOLDINGS_LIMIT = 1000
+# Unusual Whales drops the dot from class shares; news, chains and quotes use the dotted form.
+CLASS_SHARES = {"BRKB": "BRK.B", "BRKA": "BRK.A", "BFB": "BF.B", "BFA": "BF.A"}
 
 # Market Tide timestamps carry the exchange's offset; the table reads in ET.
 MARKET_TZ = pytz.timezone("America/New_York")
@@ -489,6 +491,7 @@ def get_etf_constituents(etf: str) -> list[tuple[str, float | None, str | None]]
         ticker = str(row.get("ticker") or row.get("symbol") or "").strip().upper()
         if not ticker or not ticker.replace(".", "").replace("-", "").isalpha():
             continue
+        ticker = CLASS_SHARES.get(ticker, ticker)
         holdings[ticker] = (_num(row.get("weight")), (row.get("sector") or None))
     if not holdings:
         raise NoMarketDataError(etf.upper(), detail="Unusual Whales lists no holdings")
