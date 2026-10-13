@@ -11,7 +11,7 @@ import requests
 import tradingagents.default_config as default_config
 from tradingagents.conviction import screen as screen_mod, strategist as strategist_mod, workflow
 from tradingagents.conviction.screen import NewsVerdict, screen_news, shortlist
-from tradingagents.conviction.strategist import OptionLeg, OptionsIdea, contracts_for
+from tradingagents.conviction.strategist import OptionLeg, OptionsIdea, contracts_for, max_gain
 from tradingagents.dataflows.errors import NoMarketDataError
 from tradingagents.dataflows.vendors import alpaca, unusual_whales
 
@@ -198,7 +198,7 @@ def test_full_screen_report(monkeypatch, tmp_path):
     assert "| buy | 1 | call | 100 | 2026-11-20 |" in text
     assert "12 unit(s)" in text
     assert "no orders were placed" in text
-    assert path.name == "SPY_2026-10-12.md" and path.read_text() == text
+    assert path.name.startswith("SPY_2026-10-12_") and path.read_text() == text
 
 
 def test_screen_only_skips_the_strategist(monkeypatch):
@@ -267,3 +267,17 @@ def test_throttle_spaces_call_starts():
 
     assert slept == [2.0, 4.0]  # 30 a minute: one start every 2 seconds
     assert screen_mod.Throttle(0, sleep=slept.append).wait() is None and len(slept) == 2
+
+
+def _puts(*legs, premium):
+    return OptionsIdea(trade=True, structure="s", net_premium=premium, max_loss=1.0, rationale="r",
+                       legs=[OptionLeg(action=a, option_type="put", strike=k, expiration="2026-11-20") for a, k in legs])
+
+
+def test_put_ideas_have_a_capped_max_gain():
+    assert max_gain(_puts(("buy", 940), premium=55.90)) == 88_410.0  # a long put is worth the most at zero
+    assert max_gain(_puts(("buy", 225), ("sell", 215), premium=3.45)) == 655.0
+    long_call = OptionsIdea(trade=True, structure="long call", net_premium=5.0, max_loss=500.0, rationale="r",
+                            legs=[OptionLeg(action="buy", option_type="call", strike=100, expiration="2026-11-20")])
+    assert max_gain(long_call) is None
+    assert max_gain(_idea()) == 250.0  # the model's own figure is kept

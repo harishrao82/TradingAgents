@@ -12,6 +12,7 @@ or places orders.
 """
 import logging
 import os
+import time
 from datetime import datetime, timedelta
 
 import requests
@@ -30,6 +31,9 @@ TRADIER_SANDBOX_BASE = "https://sandbox.tradier.com/v1"
 
 # Network timeout (seconds) so a stalled request can't hang the agents.
 REQUEST_TIMEOUT = 30
+RETRIES = 2
+RETRY_PAUSE = 2  # seconds, growing with each retry
+_sleep = time.sleep
 
 # Swing trades on this desk hold days to weeks, so the default chain window is
 # the expiries a 14-60 day trade would use.
@@ -73,9 +77,11 @@ def _request(path: str, params: dict) -> dict:
     network failure is "unavailable", which says nothing about the instrument.
     """
     token = get_api_key()
-    # Tradier now and then takes just over the timeout on a chain that usually
-    # comes back in a fraction of a second, so a read timeout gets one retry.
-    for attempt in range(2):
+    # Tradier now and then takes just over the timeout, or answers 502-504 from
+    # its gateway, on a request that usually comes back in a fraction of a
+    # second, so those get retried after a short pause.
+    for attempt in range(RETRIES + 1):
+        last = attempt == RETRIES
         try:
             response = requests.get(
                 f"{_base_url()}/{path}",
@@ -83,13 +89,19 @@ def _request(path: str, params: dict) -> dict:
                 headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
                 timeout=REQUEST_TIMEOUT,
             )
-            break
         except requests.Timeout as exc:
-            if attempt:
-                raise VendorUnavailableError(f"Tradier request timed out twice: {exc}") from None
-            logger.info("Tradier /%s timed out; retrying once.", path)
+            if last:
+                raise VendorUnavailableError(f"Tradier request timed out {attempt + 1} times: {exc}") from None
+            logger.info("Tradier /%s timed out; retrying.", path)
+            _sleep(RETRY_PAUSE * (attempt + 1))
+            continue
         except requests.RequestException as exc:
             raise VendorUnavailableError(f"Tradier request failed: {exc}") from None
+        if response.status_code in (502, 503, 504) and not last:
+            logger.info("Tradier /%s returned %s; retrying.", path, response.status_code)
+            _sleep(RETRY_PAUSE * (attempt + 1))
+            continue
+        break
     if response.status_code == 401:
         raise TradierNotConfiguredError("Tradier rejected the access token (401). Check TRADIER_ACCESS_TOKEN.")
     if response.status_code == 400:
