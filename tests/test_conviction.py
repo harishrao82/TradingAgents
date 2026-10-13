@@ -28,12 +28,13 @@ def test_etf_holdings_keep_stocks_heaviest_first(monkeypatch):
     monkeypatch.setenv("UNUSUAL_WHALES_API_KEY", "k")
     seen = {}
     rows = [{"ticker": "MSFT", "weight": "6.5"}, {"ticker": "AAPL", "weight": "7.1"},
-            {"ticker": "BRK.B", "weight": "1.6"}, {"ticker": "", "weight": "0.2"},
+            {"ticker": "BRK.B", "weight": "1.6", "sector": "Financial Services"}, {"ticker": "", "weight": "0.2"},
             {"ticker": "USD CASH", "weight": "0.1"}]
     monkeypatch.setattr(unusual_whales.requests, "get",
                         lambda url, params=None, **k: seen.update(params) or _response({"data": rows}))
 
     assert unusual_whales.get_etf_holdings("spy") == [("AAPL", 7.1), ("MSFT", 6.5), ("BRK.B", 1.6)]
+    assert unusual_whales.get_etf_constituents("spy")[2] == ("BRK.B", 1.6, "Financial Services")
     assert seen["limit"] >= 600  # the endpoint returns only 250 rows by default
 
 
@@ -174,7 +175,8 @@ class _StrategistLLM:
 
 
 def test_full_screen_report(monkeypatch, tmp_path):
-    monkeypatch.setattr(unusual_whales, "get_etf_holdings", lambda etf: [("AAPL", 7.0), ("MSFT", 6.0), ("XOM", 1.0)])
+    monkeypatch.setattr(unusual_whales, "get_etf_constituents",
+                        lambda etf: [("AAPL", 7.0, "Technology"), ("MSFT", 6.0, "Technology"), ("XOM", 1.0, "Energy")])
     monkeypatch.setattr(alpaca, "get_news_by_symbol",
                         lambda symbols, start, end, per: {"AAPL": "Apple news", "MSFT": "Microsoft news"})
     monkeypatch.setattr(strategist_mod, "gather",
@@ -198,6 +200,9 @@ def test_full_screen_report(monkeypatch, tmp_path):
     assert "| buy | 1 | call | 100 | 2026-11-20 |" in text
     assert "12 unit(s)" in text
     assert "no orders were placed" in text
+    assert "## SPY view: bullish (+7.00)" in text
+    assert "MSFT 6.0% (news points neither way)" in text and "XOM 1.0% (no news)" in text
+    assert "| Technology | 13.0% | +7.00 | 1 | 0 |" in text
     assert path.name.startswith("SPY_2026-10-12_") and path.read_text() == text
 
 
@@ -213,6 +218,7 @@ def test_screen_only_skips_the_strategist(monkeypatch):
     strategist.assert_not_called()
     assert result.etf == "custom list"
     assert "Short list: AAPL (down 4)" in text
+    assert "view:" not in text  # a custom list has no weights
 
 
 def test_screen_prompt_mentions_the_window():
@@ -348,3 +354,23 @@ def test_batch_needs_an_anthropic_screener(monkeypatch):
 
     with pytest.raises(ValueError, match="Batches API"):
         workflow.run_conviction_screen(config, "2026-10-13", tickers=["PEP"], screen_only=True, llms=(object(), None))
+
+
+def test_index_view_weights_calls_and_flags_concentration():
+    from tradingagents.conviction import index_view
+
+    def v(t, d, c):
+        return screen_mod.NewsVerdict(ticker=t, direction=d, conviction=c, catalyst=f"{t} news", reason="r")
+
+    holdings = {"AAPL": (7.3, "Technology"), "MSFT": (5.9, "Technology"), "JPM": (1.32, "Financial Services"),
+                "JNJ": (0.94, "Healthcare"), "NVDA": (8.2, "Technology"), "GS": (0.8, "Financial Services")}
+    verdicts = [v("AAPL", "up", 3), v("MSFT", "up", 3), v("JPM", "down", 4), v("JNJ", "up", 5), v("GS", "none", 2)]
+    text = index_view.render_index_view("SPY", verdicts, {}, holdings, {"AAPL", "MSFT", "JPM", "JNJ", "GS"})
+
+    assert "## SPY view: neutral (-0.12)" in text  # 0.94 - 1.056
+    assert "| All | +7.80 | bullish |" in text
+    assert "**Concentrated:** AAPL (3/5) and MSFT (3/5) make up 101% of the all-calls tilt." in text
+    assert "NVDA 8.2% (no news)" in text and "GS 0.8% (news points neither way)" in text
+    assert "| JPM | 1.32% | down 4 | -1.06 | JPM news |" in text
+    assert [index_view.label(t) for t in (4, 2, 0, -2, -5)] == [
+        "bullish", "mildly bullish", "neutral", "mildly bearish", "bearish"]

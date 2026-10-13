@@ -475,8 +475,8 @@ def get_earnings_calendar(symbol: str, as_of_date: str) -> str:
     return header + next_line + stats + "\n" + "\n".join(rows) + "\n"
 
 
-def get_etf_holdings(etf: str) -> list[tuple[str, float | None]]:
-    """The ETF's stock holdings as ``(ticker, weight %)``, heaviest first.
+def get_etf_constituents(etf: str) -> list[tuple[str, float | None, str | None]]:
+    """The ETF's stock holdings as ``(ticker, weight %, sector)``, heaviest first.
 
     Holdings are today's, with no history, so a screen of a past date still
     uses the current constituents. Rows without a ticker (cash, futures) are
@@ -489,7 +489,12 @@ def get_etf_holdings(etf: str) -> list[tuple[str, float | None]]:
         ticker = str(row.get("ticker") or row.get("symbol") or "").strip().upper()
         if not ticker or not ticker.replace(".", "").replace("-", "").isalpha():
             continue
-        holdings[ticker] = _num(row.get("weight"))
+        holdings[ticker] = (_num(row.get("weight")), (row.get("sector") or None))
     if not holdings:
         raise NoMarketDataError(etf.upper(), detail="Unusual Whales lists no holdings")
-    return sorted(holdings.items(), key=lambda item: -(item[1] or 0))
+    return sorted(((t, w, s) for t, (w, s) in holdings.items()), key=lambda item: -(item[1] or 0))
+
+
+def get_etf_holdings(etf: str) -> list[tuple[str, float | None]]:
+    """The ETF's stock holdings as ``(ticker, weight %)``, heaviest first."""
+    return [(ticker, weight) for ticker, weight, _ in get_etf_constituents(etf)]

@@ -28,6 +28,7 @@ from tradingagents.llm_clients.factory import (
 )
 
 from .batch import screen_news_batch
+from .index_view import render_index_view
 from .screen import NewsVerdict, screen_news, shortlist
 from .strategist import OptionsIdea, contracts_for, max_gain, suggest
 
@@ -53,6 +54,8 @@ class ScreenResult:
     shortlist: list[NewsVerdict]
     ideas: list[Idea] = field(default_factory=list)
     screen_model: str = ""
+    holdings: dict[str, tuple[float | None, str | None]] = field(default_factory=dict)
+    news_names: list[str] = field(default_factory=list)
 
 
 def screen_llm(config: dict):
@@ -81,7 +84,9 @@ def run_conviction_screen(config: dict, date: str, etf: str = "SPY", tickers: li
 
 def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> ScreenResult:
     say = progress or (lambda message: None)
-    weights = dict(unusual_whales.get_etf_holdings(etf)) if not tickers else {t.upper(): None for t in tickers}
+    holdings = ({t: (w, sector) for t, w, sector in unusual_whales.get_etf_constituents(etf)} if not tickers
+                else {t.upper(): (None, None) for t in tickers})
+    weights = {t: w for t, (w, _) in holdings.items()}
     say(f"{len(weights)} names in {etf if not tickers else 'the list'}")
 
     start = _weekdays_back(date, config["screen_lookback_days"])
@@ -108,7 +113,7 @@ def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> Scr
 
     result = ScreenResult(etf=etf if not tickers else "custom list", date=date, start=start, universe=len(weights),
                           with_news=len(news), verdicts=verdicts, failures=failures, shortlist=picked,
-                          screen_model=config["screen_llm"])
+                          screen_model=config["screen_llm"], holdings=holdings, news_names=list(news))
     if screen_only or not picked:
         return result
 
@@ -162,6 +167,9 @@ def render_report(result: ScreenResult, equity: float | None = None, risk: float
         f"{len(result.shortlist)} on the short list. Analysis only; no orders were placed.",
         "",
     ]
+    view = render_index_view(result.etf, result.verdicts, result.failures, result.holdings, set(result.news_names))
+    if view:
+        lines.append(view)
     lines += [_render_idea(item, equity, risk) for item in result.ideas]
     if result.shortlist and not result.ideas:
         lines.append("Short list: " + ", ".join(f"{v.ticker} ({v.direction} {v.conviction})" for v in result.shortlist) + "\n")
