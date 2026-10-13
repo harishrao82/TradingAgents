@@ -49,6 +49,25 @@ class NormalizedChatAnthropic(ChatAnthropic):
     def invoke(self, input, config=None, **kwargs):
         return normalize_content(super().invoke(input, config, **kwargs))
 
+    def with_structured_output(self, schema, *, method=None, **kwargs):
+        # Forced tool use, LangChain's default, is rejected with thinking on and
+        # by the newest models; it then only asks for the tool and may get prose.
+        # Native JSON-schema output is enforced by the API in both cases.
+        if method is None and not _forced_tool_use_works(self):
+            method = "json_schema"
+        return super().with_structured_output(schema, method=method or "function_calling", **kwargs)
+
+
+# Model families that reject a forced ``tool_choice`` (mirrors langchain-anthropic).
+_NO_FORCED_TOOL_USE = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5")
+
+
+def _forced_tool_use_works(llm: ChatAnthropic) -> bool:
+    """Whether a forced tool call will reach the API for this model and settings."""
+    thinking = (llm.thinking or {}).get("type") in ("enabled", "adaptive")
+    # ``effort`` turns on adaptive thinking by default on models that support it.
+    return not (thinking or llm.reasoning_effort or llm.model.startswith(_NO_FORCED_TOOL_USE))
+
 
 class AnthropicClient(BaseLLMClient):
     """Client for Anthropic Claude models."""

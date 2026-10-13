@@ -4,6 +4,7 @@ Each dated tool takes the run's ``trade_date`` from graph state (``InjectedState
 and never serves data past it, whatever date the model asks for.
 """
 
+import logging
 from typing import Annotated
 
 from langchain_core.tools import tool
@@ -13,6 +14,8 @@ from tradingagents.dataflows.date_window import as_of, as_of_window
 from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
 from tradingagents.dataflows.router import no_data_available, route_to_vendor, vendor_unavailable
 from tradingagents.dataflows.vendors.yahoo.snapshot import build_verified_market_snapshot
+
+logger = logging.getLogger(__name__)
 
 
 @tool
@@ -418,6 +421,19 @@ def get_option_chain(
     Returns:
         str: A markdown summary and strike table per expiry
     """
+    date = as_of(curr_date, trade_date)
+    earnings_date, earnings_time = _next_earnings(symbol, date) or (None, None)
     return route_to_vendor(
-        "get_option_chain", symbol, as_of(curr_date, trade_date), min_days_to_expiry, max_days_to_expiry
+        "get_option_chain", symbol, date, min_days_to_expiry, max_days_to_expiry, earnings_date, earnings_time
     )
+
+
+def _next_earnings(symbol: str, date: str) -> tuple | None:
+    """The next earnings date and time, or None when no calendar vendor can say."""
+    try:
+        found = route_to_vendor("get_next_earnings", symbol, date)
+    except Exception as e:
+        logger.warning("No earnings date for %s: %s", symbol, e)
+        return None
+    # An unavailable vendor answers with a DATA_UNAVAILABLE string, not a date.
+    return found if isinstance(found, tuple) else None

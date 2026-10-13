@@ -139,6 +139,29 @@ class TestOptionChain:
         fetched = [p["expiration"] for _, path, p, _ in calls if path == "markets/options/chains"]
         assert fetched == ["2026-10-26", "2026-11-20", "2026-12-04"]
 
+    def test_expiries_after_the_earnings_report_are_tagged(self):
+        dates = ("2026-10-30", "2026-11-06", "2026-11-20")
+        get, _ = _stub(dict.fromkeys(dates, CHAIN), expirations=dates)
+        with mock.patch.object(tradier.requests, "get", side_effect=get):
+            out = tradier.get_option_chain("AAPL", TODAY, earnings_date="2026-10-30", earnings_time="postmarket")
+        # A report after the close on expiry day comes too late for that expiry.
+        assert "### 2026-10-30 (18 days, standard)" in out
+        assert "### 2026-11-06 (25 days, standard, spans earnings 2026-10-30)" in out
+        assert "### 2026-11-20 (39 days, standard, spans earnings 2026-10-30)" in out
+        assert "Next earnings 2026-10-30 (postmarket)" in out and "2026-11-06, 2026-11-20." in out
+        assert "No earnings date was available" not in out
+
+    def test_a_premarket_report_on_expiry_day_is_spanned(self):
+        assert tradier._spans_earnings("2026-10-30", "2026-10-30", "premarket")
+        assert not tradier._spans_earnings("2026-10-30", "2026-10-30", "postmarket")
+        assert not tradier._spans_earnings("2026-10-23", "2026-10-30", "premarket")
+
+    def test_without_an_earnings_date_the_footer_says_so(self):
+        get, _ = _stub({"2026-11-20": CHAIN})
+        with mock.patch.object(tradier.requests, "get", side_effect=get):
+            out = tradier.get_option_chain("AAPL", TODAY)
+        assert "spans earnings" not in out and "No earnings date was available" in out
+
     def test_wide_quotes_are_marked(self):
         wide = CHAIN + [_option("call", 360.0, 0.80, 1.46, 0.17, 0.199, 50)]
         get, _ = _stub({"2026-11-20": wide})
@@ -204,3 +227,22 @@ def test_routing_sends_chains_to_tradier_and_degrades_without_a_token(monkeypatc
     monkeypatch.delenv("TRADIER_ACCESS_TOKEN")
     out = router.route_to_vendor("get_option_chain", "AAPL", TODAY, None, None)
     assert out.startswith("DATA_UNAVAILABLE: optional options_data")
+
+
+@pytest.mark.unit
+def test_the_chain_tool_passes_the_next_earnings_date(monkeypatch):
+    from tradingagents.agents import tools
+    calls = []
+
+    def route(method, *args):
+        calls.append((method, args))
+        return ("2026-10-30", "postmarket") if method == "get_next_earnings" else "chain"
+    monkeypatch.setattr(tools, "route_to_vendor", route)
+    tools.get_option_chain.func("AAPL", TODAY, None, None, TODAY)
+    assert calls[-1] == ("get_option_chain", ("AAPL", TODAY, None, None, "2026-10-30", "postmarket"))
+
+    # A calendar vendor that is unavailable answers with a string: no date is passed.
+    monkeypatch.setattr(tools, "route_to_vendor",
+                        lambda method, *args: calls.append((method, args)) or "DATA_UNAVAILABLE: x")
+    tools.get_option_chain.func("AAPL", TODAY, None, None, TODAY)
+    assert calls[-1] == ("get_option_chain", ("AAPL", TODAY, None, None, None, None))

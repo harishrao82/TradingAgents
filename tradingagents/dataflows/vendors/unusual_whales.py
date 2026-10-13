@@ -409,6 +409,14 @@ def get_economic_calendar(as_of_date: str, today: str | None = None) -> str:
     return header + "\n" + "\n".join(rows) + "\n"
 
 
+def get_next_earnings(symbol: str, as_of_date: str) -> tuple[str, str | None] | None:
+    """The date and time (premarket/postmarket) of the first report after ``as_of_date``."""
+    reports = _request(f"earnings/{symbol.upper()}") or []
+    future = sorted((r for r in reports if _day(r.get("report_date")) > as_of_date),
+                    key=lambda r: _day(r.get("report_date")))
+    return (_day(future[0]["report_date"]), future[0].get("report_time")) if future else None
+
+
 def get_earnings_calendar(symbol: str, as_of_date: str) -> str:
     """The ticker's next scheduled earnings report and how past reports moved the stock.
 

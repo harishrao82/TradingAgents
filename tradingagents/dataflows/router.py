@@ -31,6 +31,7 @@ from tradingagents.dataflows.vendors.unusual_whales import (
     get_earnings_calendar as get_unusual_whales_earnings_calendar,
     get_economic_calendar as get_unusual_whales_economic_calendar,
     get_market_tide as get_unusual_whales_market_tide,
+    get_next_earnings as get_unusual_whales_next_earnings,
     get_options_activity as get_unusual_whales_options_activity,
     get_options_flow as get_unusual_whales_options_flow,
 )
@@ -106,6 +107,7 @@ TOOLS_CATEGORIES = {
         "tools": [
             "get_economic_calendar",
             "get_earnings_calendar",
+            "get_next_earnings",
         ]
     },
 }
@@ -191,6 +193,9 @@ VENDOR_METHODS = {
     },
     "get_earnings_calendar": {
         "unusual_whales": get_unusual_whales_earnings_calendar,
+    },
+    "get_next_earnings": {
+        "unusual_whales": get_unusual_whales_next_earnings,
     },
 }
 

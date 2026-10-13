@@ -146,7 +146,7 @@ def _price(value) -> str:
     return "?" if number is None else f"{number:.2f}"
 
 
-def _summarise_expiration(expiration: str, days: int, options: list, spot: float) -> str:
+def _summarise_expiration(expiration: str, days: int, options: list, spot: float, earnings: str | None = None) -> str:
     calls = {o["strike"]: o for o in options if o.get("option_type") == "call" and _num(o.get("strike")) is not None}
     puts = {o["strike"]: o for o in options if o.get("option_type") == "put" and _num(o.get("strike")) is not None}
     strikes = sorted(set(calls) | set(puts), key=float)
@@ -174,7 +174,8 @@ def _summarise_expiration(expiration: str, days: int, options: list, spot: float
     put_oi = sum(int(_num(o.get("open_interest")) or 0) for o in puts.values())
     kind = options[0].get("expiration_type") or ""
 
-    lines = [f"\n### {expiration} ({days} days{', ' + kind if kind else ''})"]
+    tags = [f"{days} days", *([kind] if kind else []), *([f"spans earnings {earnings}"] if earnings else [])]
+    lines = [f"\n### {expiration} ({', '.join(tags)})"]
     facts = [f"ATM strike {atm}"]
     if atm_iv is not None:
         facts.append(f"ATM IV {_pct(atm_iv)}")
@@ -245,17 +246,31 @@ def _expiry_order(in_window: list) -> list:
     return [(d, by_date[d]) for d in order]
 
 
+def _spans_earnings(expiration: str, report_date: str, report_time: str | None) -> bool:
+    """Whether an expiry is still open after the earnings report moves the stock.
+
+    A report before the open on expiry day moves the stock while the option
+    still trades; one after the close comes too late.
+    """
+    if expiration == report_date:
+        return (report_time or "").lower() in ("premarket", "bmo", "pre")
+    return expiration > report_date
+
+
 def get_option_chain(
     symbol: str,
     as_of_date: str,
     min_dte: int | None = None,
     max_dte: int | None = None,
+    earnings_date: str | None = None,
+    earnings_time: str | None = None,
 ) -> str:
     """Live option chains for the expiries ``min_dte``-``max_dte`` days out.
 
     For each expiry: the at-the-money IV, the straddle's implied move, the
     25-delta skew, open interest, and the strikes around the money with bid,
-    ask, delta, IV and open interest.
+    ask, delta, IV and open interest. Given the next earnings date, each expiry
+    still open after the report is tagged as spanning it.
     """
     ticker = symbol.upper()
     header = f"## Tradier option chains: {ticker}, as of {as_of_date}\n"
@@ -292,6 +307,12 @@ def get_option_chain(
 
     parts = [header, f"\nUnderlying {ticker} last {spot:.2f}. Expirations {min_dte}-{max_dte} days out: "
              f"{', '.join(d for d, _ in in_window)}.\n"]
+    spanning = set()
+    if earnings_date and earnings_date >= as_of_date:
+        spanning = {d for d, _ in in_window if _spans_earnings(d, earnings_date, earnings_time)}
+        listed = ", ".join(sorted(spanning)) or "none of them"
+        parts.append(f"Next earnings {earnings_date} ({earnings_time or 'time unknown'}). Expirations in the "
+                     f"window that span it and carry the earnings move in their IV: {listed}.\n")
     shown, skipped, fetched = [], [], 0
     for date, days in _expiry_order(in_window):
         if len(shown) == MAX_EXPIRATIONS or fetched == MAX_CHAIN_FETCHES:
@@ -305,7 +326,8 @@ def get_option_chain(
         if _open_interest(options) == 0:
             skipped.append(date)
             continue
-        shown.append((date, _summarise_expiration(date, days, options, spot)))
+        shown.append((date, _summarise_expiration(date, days, options, spot,
+                                                  earnings_date if date in spanning else None)))
     if not shown:
         detail = f"no chain with open interest for expirations {min_dte}-{max_dte} days out"
         raise NoMarketDataError(ticker, detail=detail)
@@ -315,7 +337,8 @@ def get_option_chain(
     parts.append(
         "\nIVs are annualised, read from the out-of-the-money side of each strike (the ATM row "
         "averages both); a contract with no bid shows no IV. Delta is per share; bid/ask are per "
-        "share (x100 per contract); (wide) marks a spread over 25% of the mid. An expiry after the "
-        "next earnings date carries the earnings move in its IV.\n"
+        "share (x100 per contract); (wide) marks a spread over 25% of the mid.\n"
+        + ("" if earnings_date else "No earnings date was available: an expiry after the next report "
+           "carries the earnings move in its IV, so check the earnings calendar.\n")
     )
     return "".join(parts)
