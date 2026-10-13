@@ -156,5 +156,39 @@ def backtest(
         console.print(f"[yellow]unsettled:[/yellow] {ticker}: {reason}")
 
 
+@app.command()
+def screen(
+    etf: str = typer.Argument("SPY", help="ETF whose holdings (from Unusual Whales) make the universe"),
+    date: str = typer.Option(None, "--date", help="Screen date, YYYY-MM-DD; omit for today"),
+    tickers: str = typer.Option(None, "--tickers", help="Comma-separated tickers to screen instead of the ETF"),
+    equity: float = typer.Option(None, "--equity", help="Account size, to size each idea to the per-trade risk"),
+    screen_only: bool = typer.Option(False, "--screen-only", help="Stop after the news screen; no strategist"),
+    min_conviction: int = typer.Option(None, "--min-conviction", help="1-5; default from config (4)"),
+    max_names: int = typer.Option(None, "--max-names", help="Cap on the strategist's short list"),
+):
+    """Screen an ETF's holdings for conviction news and suggest an options trade for each. Places no orders."""
+    from datetime import date as _date
+
+    from tradingagents.conviction import render_report, run_conviction_screen, save_report
+
+    config = dict(DEFAULT_CONFIG)
+    if min_conviction is not None:
+        config["screen_min_conviction"] = min_conviction
+    if max_names is not None:
+        config["screen_max_names"] = max_names
+    names = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers else None
+    when = date or _date.today().isoformat()
+    try:
+        result = run_conviction_screen(config, when, etf=etf.upper(), tickers=names, equity=equity,
+                                       screen_only=screen_only, progress=lambda m: console.print(f"[dim]{m}[/dim]"))
+    except Exception as exc:  # a missing key or an unreachable vendor is a setup error
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    text = render_report(result, equity, config["risk_per_trade"])
+    path = save_report(result, text, config["results_dir"])
+    console.print(text)
+    console.print(f"Saved: {path}")
+
+
 if __name__ == "__main__":
     app()

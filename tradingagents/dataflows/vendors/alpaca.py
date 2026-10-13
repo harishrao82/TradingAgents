@@ -30,6 +30,10 @@ NEWS_URL = "https://data.alpaca.markets/v1beta1/news"
 REQUEST_TIMEOUT = 30
 PAGE_SIZE = 50  # Alpaca's maximum per page
 MAX_PAGES = 4
+# A universe screen asks for many symbols at once: this many per request, and
+# up to BULK_MAX_PAGES pages for each batch.
+BULK_BATCH = 50
+BULK_MAX_PAGES = 30
 
 # Auto-generated filler: peer-comparison and options-activity write-ups with
 # no reporting behind them.
@@ -80,11 +84,12 @@ def _request(params: dict) -> dict:
     return response.json() or {}
 
 
-def _fetch(start: datetime, end: datetime, symbols: str | None, limit: int | None) -> list:
+def _fetch(start: datetime, end: datetime, symbols: str | None, limit: int | None,
+           max_pages: int = MAX_PAGES) -> list:
     """Articles created in ``[start, end)``, newest first, filler removed.
 
     Stops once ``limit`` articles are in hand; ``None`` reads every page up to
-    ``MAX_PAGES``.
+    ``max_pages``.
     """
     params = {
         "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -95,7 +100,7 @@ def _fetch(start: datetime, end: datetime, symbols: str | None, limit: int | Non
     if symbols:
         params["symbols"] = symbols
     articles = []
-    for _ in range(MAX_PAGES):
+    for _ in range(max_pages):
         body = _request(params)
         for article in body.get("news") or []:
             if (article.get("author") or "").strip().lower() in FILLER_AUTHORS:
@@ -191,3 +196,32 @@ def get_global_news(as_of_date: str, look_back_days: int | None = None, limit: i
     if not articles:
         return f"No market-wide Benzinga news between {start_date} and {as_of_date}."
     return f"## Market news (Benzinga), from {start_date} to {as_of_date}:\n\n{_format(articles)}"
+
+
+def _window(start_date: str, end_date: str) -> tuple[datetime, datetime]:
+    start = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC)
+    return start, datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC) + timedelta(days=1)
+
+
+def get_news_by_symbol(symbols: list[str], start_date: str, end_date: str, per_symbol: int) -> dict[str, str]:
+    """Benzinga news for many tickers at once, as each ticker's formatted article list.
+
+    Reads the window in batches of ``BULK_BATCH`` symbols, then picks each
+    ticker's articles as ``get_news`` does. Tickers with no article in the
+    window are left out.
+    """
+    start, end = _window(start_date, end_date)
+    wanted = list(dict.fromkeys(s.upper() for s in symbols))
+    by_symbol: dict[str, dict] = {s: {} for s in wanted}
+    for i in range(0, len(wanted), BULK_BATCH):
+        batch = wanted[i:i + BULK_BATCH]
+        for article in _fetch(start, end, ",".join(batch), None, BULK_MAX_PAGES):
+            for symbol in article.get("symbols") or []:
+                if symbol in by_symbol:
+                    by_symbol[symbol][article.get("id")] = article
+    news = {}
+    for symbol, found in by_symbol.items():
+        chosen = _select(list(found.values()), symbol, per_symbol)
+        if chosen:
+            news[symbol] = _format(chosen, symbol)
+    return news

@@ -470,3 +470,22 @@ def get_earnings_calendar(symbol: str, as_of_date: str) -> str:
             f"{_pct(r.get('short_straddle_1d'))} |"
         )
     return header + next_line + stats + "\n" + "\n".join(rows) + "\n"
+
+
+def get_etf_holdings(etf: str) -> list[tuple[str, float | None]]:
+    """The ETF's stock holdings as ``(ticker, weight %)``, heaviest first.
+
+    Holdings are today's, with no history, so a screen of a past date still
+    uses the current constituents. Rows without a ticker (cash, futures) are
+    dropped.
+    """
+    rows = _request(f"etfs/{etf.upper()}/holdings")
+    holdings = {}
+    for row in rows:
+        ticker = str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+        if not ticker or not ticker.replace(".", "").replace("-", "").isalpha():
+            continue
+        holdings[ticker] = _num(row.get("weight"))
+    if not holdings:
+        raise NoMarketDataError(etf.upper(), detail="Unusual Whales lists no holdings")
+    return sorted(holdings.items(), key=lambda item: -(item[1] or 0))

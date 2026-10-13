@@ -25,6 +25,8 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
     "TRADINGAGENTS_LLM_MAX_RETRIES":      "llm_max_retries",
     "TRADINGAGENTS_MAX_TOKENS":           "max_tokens",
+    "TRADINGAGENTS_SCREEN_LLM_PROVIDER":  "screen_llm_provider",
+    "TRADINGAGENTS_SCREEN_LLM":           "screen_llm",
     # Provider-specific reasoning/thinking knobs (None = each provider's own
     # default). Settable here for non-interactive runs; the CLI also offers an
     # interactive choice, which is skipped when the matching var is set.
@@ -150,6 +152,17 @@ def build_default_config() -> dict:
             "ECB Bank of England BOJ central bank policy",
             "oil commodities supply chain energy",
         ],
+        # Conviction screen (`tradingagents screen`): a cheap model reads the news
+        # on every name in an ETF, and the deep tier suggests an options trade for
+        # each name the news points up or down with conviction. Analysis only.
+        "screen_llm_provider": "openrouter",       # needs OPENROUTER_API_KEY
+        "screen_llm": "google/gemini-3.8-flash",
+        "screen_lookback_days": 3,       # weekdays of news, ending on the screen date
+        "screen_articles_per_name": 8,
+        "screen_min_conviction": 4,      # 1-5; a name needs this to reach the strategist
+        "screen_max_names": 8,           # cap on the strategist's short list
+        "screen_workers": 8,             # parallel screen calls
+        "risk_per_trade": 0.03,          # max loss per idea, as a share of --equity
         # Data vendor configuration
         # Category-level configuration (default for all tools in category).
         # The configured value is the exact vendor chain — requests are NOT silently
