@@ -6,9 +6,9 @@ gets a multiplier on its equal weight from two checks:
 
 1. The news screen (the same cheap-model screen as ``tradingagents screen``):
    a fresh catalyst pointing up raises the weight, one pointing down cuts it.
-2. Earnings: no name is overweighted into an imminent report, so an up tilt
-   is capped at equal weight when earnings land within ``tilt_earnings_hold_days``
-   weekdays (10 by default). Later reports before the next rebalance are noted only.
+2. Earnings before the next rebalance are noted on each name. Setting
+   ``tilt_earnings_hold_days`` above 0 caps an up tilt at equal weight when the
+   report lands within that many weekdays; it is off by default.
 
 Multipliers are clipped to [low, high] (0.5x-1.5x by default) and rescaled so
 they average 1, which keeps the whole book invested. A strong down call

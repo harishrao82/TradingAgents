@@ -81,3 +81,14 @@ def test_only_imminent_earnings_hold_an_up_tilt():
                        {"SOON": "2026-10-20", "LATER": "2026-11-12"}, hold_until="2026-10-27")
     by = {n.ticker: n for n in names}
     assert by["SOON"].raw == 1.0 and by["LATER"].raw == 1.3
+
+
+def test_earnings_hold_is_off_by_default(monkeypatch):
+    from tradingagents.conviction.workflow import ScreenResult
+
+    monkeypatch.setattr(tilt_mod, "run_conviction_screen", lambda *a, **k: ScreenResult(
+        "custom list", "2026-10-13", "2026-10-09", 2, 1, [_v("LITE", "up", 4)], {}, [], screen_model="m"))
+    monkeypatch.setattr(tilt_mod.unusual_whales, "get_next_earnings", lambda t, d: ("2026-10-14", None))
+    result = tilt_mod.run_basket_tilt(dict(default_config.DEFAULT_CONFIG), "2026-10-13", ["LITE"], ["AMD"])
+    by = {n.ticker: n for n in result.names}
+    assert by["LITE"].raw == 1.3 and by["LITE"].notes == ["earnings 2026-10-14"]

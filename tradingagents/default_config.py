@@ -178,7 +178,7 @@ def build_default_config() -> dict:
         # Basket tilt (tradingagents tilt): bounds on each name's weight vs equal weight
         "tilt_min_multiplier": 0.5,
         "tilt_max_multiplier": 1.5,
-        "tilt_earnings_hold_days": 10,   # weekdays: no up tilt into a report this close
+        "tilt_earnings_hold_days": 0,    # weekdays: no up tilt into a report this close; 0 = off
         # Data vendor configuration
         # Category-level configuration (default for all tools in category).
         # The configured value is the exact vendor chain — requests are NOT silently
