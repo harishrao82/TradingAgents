@@ -156,11 +156,13 @@ def build_default_config() -> dict:
         # Conviction screen (`tradingagents screen`): a cheap model reads the news
         # on every name in an ETF, and the deep tier suggests an options trade for
         # each name the news points up or down with conviction. Analysis only.
-        # Haiku by default: a new OpenRouter account allows about 20 requests a
-        # minute, too few for ~500 names. For Gemini Flash set provider
+        # Haiku 5.5 by default: in a side-by-side on 218 SPY names it was about
+        # 6x cheaper than Haiku 4.5 and stricter about what counts as conviction.
+        # A new OpenRouter account allows about 20 requests a minute, too few for
+        # ~500 names. For Gemini Flash set provider
         # "openrouter", model "google/gemini-3.8-flash" and a per-minute cap.
         "screen_llm_provider": "anthropic",
-        "screen_llm": "claude-haiku-4-5",
+        "screen_llm": "claude-haiku-5-5",
         "screen_requests_per_minute": 0, # 0 = no cap; rate-limit errors are retried either way
         "screen_lookback_days": 3,       # weekdays of news, ending on the screen date
         "screen_articles_per_name": 8,
