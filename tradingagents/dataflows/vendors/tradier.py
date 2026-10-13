@@ -73,15 +73,23 @@ def _request(path: str, params: dict) -> dict:
     network failure is "unavailable", which says nothing about the instrument.
     """
     token = get_api_key()
-    try:
-        response = requests.get(
-            f"{_base_url()}/{path}",
-            params=params,
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-            timeout=REQUEST_TIMEOUT,
-        )
-    except requests.RequestException as exc:
-        raise VendorUnavailableError(f"Tradier request failed: {exc}") from None
+    # Tradier now and then takes just over the timeout on a chain that usually
+    # comes back in a fraction of a second, so a read timeout gets one retry.
+    for attempt in range(2):
+        try:
+            response = requests.get(
+                f"{_base_url()}/{path}",
+                params=params,
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                timeout=REQUEST_TIMEOUT,
+            )
+            break
+        except requests.Timeout as exc:
+            if attempt:
+                raise VendorUnavailableError(f"Tradier request timed out twice: {exc}") from None
+            logger.info("Tradier /%s timed out; retrying once.", path)
+        except requests.RequestException as exc:
+            raise VendorUnavailableError(f"Tradier request failed: {exc}") from None
     if response.status_code == 401:
         raise TradierNotConfiguredError("Tradier rejected the access token (401). Check TRADIER_ACCESS_TOKEN.")
     if response.status_code == 400:
