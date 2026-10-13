@@ -240,7 +240,7 @@ class TestRouting:
         assert out.startswith("DATA_UNAVAILABLE: optional event_calendar")
 
     def test_default_config_routes_to_unusual_whales(self, _isolated_config):
-        assert router.get_vendor("options_data") == "unusual_whales"
+        assert router.get_vendor("options_data") == "unusual_whales,tradier"
         assert router.get_vendor("event_calendar") == "unusual_whales"
 
 

@@ -393,3 +393,31 @@ def get_earnings_calendar(
         str: A markdown report of upcoming and past earnings
     """
     return route_to_vendor("get_earnings_calendar", symbol, as_of(curr_date, trade_date))
+
+
+@tool
+def get_option_chain(
+    symbol: Annotated[str, InjectedState("company_of_interest")],
+    curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
+    min_days_to_expiry: Annotated[int | None, "Nearest expiry to show, in days; omit for 14"] = None,
+    max_days_to_expiry: Annotated[int | None, "Furthest expiry to show, in days; omit for 60"] = None,
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> str:
+    """
+    Retrieve live option chains for the instrument under analysis: for each
+    expiry in the window, the at-the-money implied volatility, the straddle's
+    implied move, the 25-delta skew, open interest, and the strikes around the
+    money with bid, ask, delta and IV. Live only: a past date returns
+    unavailable. Uses the configured vendor for get_option_chain.
+
+    Args:
+        curr_date (str): Current date in yyyy-mm-dd format
+        min_days_to_expiry (int): Nearest expiry in days; omit for 14
+        max_days_to_expiry (int): Furthest expiry in days; omit for 60
+
+    Returns:
+        str: A markdown summary and strike table per expiry
+    """
+    return route_to_vendor(
+        "get_option_chain", symbol, as_of(curr_date, trade_date), min_days_to_expiry, max_days_to_expiry
+    )

@@ -26,6 +26,7 @@ from tradingagents.dataflows.vendors.sec_edgar import (
     get_cashflow as get_sec_edgar_cashflow,
     get_income_statement as get_sec_edgar_income_statement,
 )
+from tradingagents.dataflows.vendors.tradier import get_option_chain as get_tradier_option_chain
 from tradingagents.dataflows.vendors.unusual_whales import (
     get_earnings_calendar as get_unusual_whales_earnings_calendar,
     get_economic_calendar as get_unusual_whales_economic_calendar,
@@ -97,6 +98,7 @@ TOOLS_CATEGORIES = {
             "get_options_flow",
             "get_options_activity",
             "get_market_tide",
+            "get_option_chain",
         ]
     },
     "event_calendar": {
@@ -179,6 +181,9 @@ VENDOR_METHODS = {
     },
     "get_market_tide": {
         "unusual_whales": get_unusual_whales_market_tide,
+    },
+    "get_option_chain": {
+        "tradier": get_tradier_option_chain,
     },
     # event_calendar
     "get_economic_calendar": {
