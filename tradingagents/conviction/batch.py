@@ -39,15 +39,17 @@ def screen_news_batch(client, model: str, news_by_ticker: dict[str, str], start:
     if progress:
         progress(f"batch {batch.id} submitted with {len(requests)} names")
 
-    began = clock()
+    began, reported = clock(), 0
     while batch.processing_status != "ended":
         if clock() - began > MAX_WAIT_SECONDS:
             raise TimeoutError(f"batch {batch.id} had not ended after 24 hours")
         sleep(POLL_SECONDS)
         batch = client.messages.batches.retrieve(batch.id)
-        if progress:
-            counts = batch.request_counts
-            progress(f"batch: {counts.succeeded + counts.errored} of {len(requests)} done")
+        counts = batch.request_counts
+        done = counts.succeeded + counts.errored
+        if progress and done != reported:
+            progress(f"batch: {done} of {len(requests)} done")
+            reported = done
 
     verdicts, failures = [], {}
     for entry in client.messages.batches.results(batch.id):
