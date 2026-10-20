@@ -234,14 +234,16 @@ def replay(
     days: int = typer.Option(10, "--days", help="How many past sessions to replay, ending yesterday"),
     batch: bool = typer.Option(False, "--batch", help="Screen through Anthropic's Batches API: half price, slower"),
     parallel: int = typer.Option(4, "--parallel", help="Mornings screened at once; with --batch, more is faster"),
+    flow: bool = typer.Option(False, "--flow", help="Also mark whether Unusual Whales flow before the open agreed"),
 ):
     """Replay the pre-market day screen on past mornings and score its picks by what each stock did. Places no orders."""
+    import csv
     from datetime import date as _date
     from pathlib import Path
 
-    from tradingagents.conviction.replay import render_replay, run_replay, trading_days
+    from tradingagents.conviction.replay import render_replay, run_replay, to_rows, trading_days
 
-    config = {**DEFAULT_CONFIG, "screen_mode": "day", "screen_batch": batch}
+    config = {**DEFAULT_CONFIG, "screen_mode": "day", "screen_batch": batch, "replay_flow": flow}
     try:
         dates = trading_days(_date.today().isoformat(), days)
         result = run_replay(config, dates, etf=etf.upper(), progress=lambda m: console.print(f"[dim]{m}[/dim]"),
@@ -253,8 +255,14 @@ def replay(
     path = Path(config["results_dir"]) / "screens" / f"{etf.upper()}_replay_{dates[0]}_{dates[-1]}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
+    rows = to_rows(result)
+    if rows:
+        with path.with_suffix(".csv").open("w", newline="") as out:
+            writer = csv.DictWriter(out, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
     console.print(text)
-    console.print(f"Saved: {path}")
+    console.print(f"Saved: {path} and {path.with_suffix('.csv').name}")
 
 
 @app.command()

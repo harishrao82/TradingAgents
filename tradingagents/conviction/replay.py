@@ -23,7 +23,7 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from statistics import mean
 from zoneinfo import ZoneInfo
 
@@ -33,6 +33,7 @@ from tradingagents.dataflows.config import run_config
 from tradingagents.dataflows.vendors import alpaca, unusual_whales
 from tradingagents.dataflows.vendors.tradier import _as_list, _num, _request
 
+from . import flow as flow_check
 from .batch import screen_news_batch
 from .reaction import RANK, classify
 from .screen import DAY_SCREEN_PROMPT, NewsVerdict, screen_news, shortlist
@@ -54,6 +55,8 @@ class Pick:
     picked: bool                 # on the short list the day mode would trade
     returns: dict[str, float | None] = field(default_factory=dict)  # move in the call's direction, by hold
     gap_source: str = "pre-market"   # or "open" when no pre-market bar was available
+    flow: str = ""               # with the flow check: agree, disagree, neutral or unknown
+    flow_net: float | None = None  # bullish minus bearish bet-like premium before the open
 
 
 @dataclass
@@ -149,8 +152,18 @@ def replay_day(config: dict, date: str, weights: dict[str, float | None], screen
     picked = {v.ticker for v in shortlist(candidates, config["screen_min_conviction"], config["screen_max_names"],
                                           weights, config["screen_direction"],
                                           {t: RANK[s] for t, s in status.items()})}
-    return [Pick(date, v, gap_of[v.ticker], status[v.ticker], v.ticker in picked, gap_source=source[v.ticker])
-            for v in strong], len(failures)
+    picks = [Pick(date, v, gap_of[v.ticker], status[v.ticker], v.ticker in picked, gap_source=source[v.ticker])
+             for v in strong]
+    if config.get("replay_flow"):
+        since = f"{_weekdays_back(date, 2)}T00:00:00Z"
+        until = cutoff(date).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for p in picks:
+            try:
+                p.flow_net = flow_check.net_flow(p.verdict.ticker, since, until)
+            except Exception as exc:  # flow is one more label; its absence leaves the pick standing
+                logger.warning("No flow for %s on %s: %s", p.verdict.ticker, date, exc)
+            p.flow = flow_check.agreement(p.verdict.direction, p.flow_net)
+    return picks, len(failures)
 
 
 def run_replay(config: dict, dates: list[str], etf: str = "SPY", llms: tuple | None = None,
@@ -214,6 +227,21 @@ def _row(name: str, picks: list[Pick]) -> str:
     return f"| {name} | {len(picks)} | " + " | ".join(cells) + " |"
 
 
+def _flow(p: Pick) -> str:
+    if not p.flow:
+        return ""
+    return p.flow + (f" ({p.flow_net / 1e6:+.1f}M)" if p.flow_net else "")
+
+
+def to_rows(result: ReplayResult) -> list[dict]:
+    """One row per strong call, for a CSV to filter later without screening again."""
+    return [{"date": p.date, "ticker": p.verdict.ticker, "direction": p.verdict.direction,
+             "conviction": p.verdict.conviction, "catalyst": p.verdict.catalyst, "gap": p.gap,
+             "gap_source": p.gap_source, "reaction": p.status, "picked": p.picked, "flow": p.flow,
+             "flow_net": p.flow_net, **{f"ret_{h.replace(' ', '')}": r for h, r in p.returns.items()}}
+            for p in result.picks]
+
+
 def render_replay(result: ReplayResult) -> str:
     if not result.dates:
         return f"# {result.etf} day-screen replay\n\nEvery morning failed: {', '.join(result.skipped)}.\n"
@@ -224,11 +252,22 @@ def render_replay(result: ReplayResult) -> str:
         ("Moving against the news", [p for p in picks if p.status == "disagree"]),
         ("Every strong call", picks),
     ]
+    if any(p.flow for p in picks):
+        short = [p for p in picks if p.picked]
+        groups += [
+            ("Short list, flow agrees", [p for p in short if p.flow == "agree"]),
+            ("Short list, flow neutral", [p for p in short if p.flow == "neutral"]),
+            ("Short list, flow disagrees", [p for p in short if p.flow == "disagree"]),
+            ("Every strong call, flow agrees", [p for p in picks if p.flow == "agree"]),
+            ("Every strong call, flow disagrees", [p for p in picks if p.flow == "disagree"]),
+        ]
     lines = [
         f"# {result.etf} day-screen replay, {result.dates[0]} to {result.dates[-1]}", "",
         f"{len(result.dates)} mornings. News up to 9:25 ET each day, the day prompt, and the pre-market move from "
         "the last 5-minute bar before the open. Each move is the stock's, from that day's open, in the call's "
-        "direction: positive means the call was right. Option P&L is not replayed. Analysis only.", "",
+        "direction: positive means the call was right. Option P&L is not replayed. Analysis only."
+        + (" Flow: bet-like Unusual Whales alerts (opening, single-leg, 60 days or less) from the prior session "
+           f"to 9:25 ET, net of ${flow_check.MIN_NET:,} or more one way." if any(p.flow for p in picks) else ""), "",
         "| Group | Calls | Open to close | Open to day-2 close | Open to day-5 close |", "|---|---|---|---|---|",
         *[_row(name, group) for name, group in groups if group], "",
     ]
@@ -245,10 +284,13 @@ def render_replay(result: ReplayResult) -> str:
                      key=lambda p: (not p.picked, RANK[p.status], -p.verdict.conviction, p.verdict.ticker))
         if not day:
             continue
-        lines += [f"## {date}", "", "| Ticker | Call | Pre-market | Reaction | Traded | Day | 2 days | 5 days | Catalyst |",
-                  "|---|---|---|---|---|---|---|---|---|"]
+        with_flow = any(p.flow for p in picks)
+        lines += [f"## {date}", "", "| Ticker | Call | Pre-market | Reaction | " + ("Flow | " if with_flow else "")
+                  + "Traded | Day | 2 days | 5 days | Catalyst |", "|---" * (9 + with_flow) + "|"]
         lines += [f"| {p.verdict.ticker} | {p.verdict.direction} {p.verdict.conviction} | {_pct(p.gap)} | {p.status} | "
-                  f"{'yes' if p.picked else 'no'} | {_pct(p.returns.get('day'))} | {_pct(p.returns.get('2 days'))} | "
-                  f"{_pct(p.returns.get('5 days'))} | {p.verdict.catalyst} |" for p in day]
+                  + (f"{_flow(p)} | " if with_flow else "")
+                  + f"{'yes' if p.picked else 'no'} | {_pct(p.returns.get('day'))} | "
+                  f"{_pct(p.returns.get('2 days'))} | {_pct(p.returns.get('5 days'))} | {p.verdict.catalyst} |"
+                  for p in day]
         lines.append("")
     return "\n".join(lines) + "\n"

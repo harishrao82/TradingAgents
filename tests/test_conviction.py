@@ -618,3 +618,55 @@ def test_replay_leaves_out_a_morning_that_fails(monkeypatch):
 
     assert result.skipped == ["2026-10-08"] and result.dates == ["2026-10-09"]
     assert "Mornings that failed and are left out: 2026-10-08." in replay.render_replay(result)
+
+
+def _alert(i, kind, ask, bid, expiry="2026-10-30", opening=True, multileg=False, premium=None):
+    return {"id": i, "created_at": "2026-10-08T15:00:00Z", "type": kind, "expiry": expiry,
+            "total_ask_side_prem": ask, "total_bid_side_prem": bid, "total_premium": premium or ask + bid,
+            "all_opening_trades": opening, "has_multileg": multileg}
+
+
+def test_flow_nets_only_bet_like_trades_by_who_started_them(monkeypatch):
+    from tradingagents.conviction import flow
+
+    alerts = [_alert(1, "call", 900_000, 100_000),                         # calls bought: +1.0M
+              _alert(2, "put", 50_000, 450_000),                           # puts sold: +0.5M
+              _alert(3, "put", 700_000, 0),                                # puts bought: -0.7M
+              _alert(4, "call", 0, 9_000_000, expiry="2027-01-15"),        # long-dated: a hedge, skipped
+              _alert(5, "call", 5_000_000, 0, opening=False),              # closing: skipped
+              _alert(6, "put", 3_000_000, 0, multileg=True),               # a spread leg: skipped
+              _alert(7, "call", 300_000, 300_000)]                         # at the mid: no lean
+    requested = []
+    monkeypatch.setattr(unusual_whales, "_request", lambda path, params: requested.append(params) or alerts)
+
+    net = flow.net_flow("GE", "2026-10-08T00:00:00Z", "2026-10-09T13:25:00Z")
+
+    assert net == pytest.approx(800_000)
+    assert requested[0]["ticker_symbol"] == "GE" and requested[0]["older_than"] == "2026-10-09T13:25:00Z"
+    assert flow.agreement("up", net) == "agree" and flow.agreement("down", net) == "disagree"
+    assert flow.agreement("up", 100_000) == "neutral" and flow.agreement("up", None) == "unknown"
+
+
+def test_replay_marks_and_groups_picks_by_flow(monkeypatch):
+    from tradingagents.conviction import flow, replay
+
+    monkeypatch.setattr(unusual_whales, "get_etf_constituents", lambda etf: [("GE", 1.0, "I"), ("BAC", 1.2, "F")])
+    monkeypatch.setattr(alpaca, "get_news_by_symbol", lambda symbols, start, end, per, **kw: dict.fromkeys(symbols, "n"))
+    monkeypatch.setattr(flow, "net_flow", lambda ticker, since, until: {"GE": 2e6, "BAC": 5e5}[ticker])
+    bars = {"SPY": {d: {} for d in ("2026-10-08", "2026-10-09")},
+            "GE": {"2026-10-08": {"close": 100}, "2026-10-09": {"open": 100, "close": 102}},
+            "BAC": {"2026-10-08": {"close": 50}, "2026-10-09": {"open": 50, "close": 49}}}
+    screener = _ScreenLLM({"GE": '{"direction": "up", "conviction": 5, "catalyst": "beat", "reason": "r"}',
+                           "BAC": '{"direction": "down", "conviction": 5, "catalyst": "charge", "reason": "r"}'})
+    config = {**default_config.DEFAULT_CONFIG, "screen_mode": "day", "replay_flow": True}
+
+    result = replay.run_replay(config, ["2026-10-09"], llms=(screener,), gaps=lambda t, d: None,
+                               bars=lambda ticker: bars[ticker])
+    text = replay.render_replay(result)
+
+    by = {p.verdict.ticker: p for p in result.picks}
+    assert by["GE"].flow == "agree" and by["BAC"].flow == "disagree"
+    assert "| Short list, flow agrees | 1 | +2.0% (1/1 right) |" in text
+    assert "| Short list, flow disagrees | 1 | +2.0% (1/1 right) |" in text
+    assert "agree (+2.0M)" in text
+    assert replay.to_rows(result)[0]["flow"] in ("agree", "disagree")
