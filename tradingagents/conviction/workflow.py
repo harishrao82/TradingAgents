@@ -91,6 +91,12 @@ def _weekdays_back(date: str, days: int) -> str:
     return day.strftime("%Y-%m-%d")
 
 
+def prior_close(date: str) -> datetime:
+    """4 pm New York time on the weekday before ``date``: news after it is fresh for that morning."""
+    day = datetime.strptime(_weekdays_back(date, 2), "%Y-%m-%d")
+    return day.replace(hour=16, tzinfo=ZoneInfo("America/New_York"))
+
+
 def _market_open(date: str, now: datetime | None = None) -> bool:
     """Whether ``date`` is today in New York and the regular session has started."""
     now = now or datetime.now(ZoneInfo("America/New_York"))
@@ -133,7 +139,9 @@ def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> Scr
     say(f"{len(weights)} names in {etf if not tickers else 'the list'}")
 
     start = _weekdays_back(date, config["day_lookback_days" if day else "screen_lookback_days"])
-    news = alpaca.get_news_by_symbol(list(weights), start, date, config["screen_articles_per_name"])
+    fresh = prior_close(date) if day and config["day_fresh_only"] else None
+    news = alpaca.get_news_by_symbol(list(weights), start, date, config["screen_articles_per_name"],
+                                     fresh_since=fresh)
     say(f"{len(news)} names have Benzinga news from {start} to {date}")
 
     screener, strategist = llms or (None, None)

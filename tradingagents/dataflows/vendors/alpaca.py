@@ -204,13 +204,15 @@ def _window(start_date: str, end_date: str) -> tuple[datetime, datetime]:
 
 
 def get_news_by_symbol(symbols: list[str], start_date: str, end_date: str, per_symbol: int,
-                       cutoff: datetime | None = None) -> dict[str, str]:
+                       cutoff: datetime | None = None, fresh_since: datetime | None = None) -> dict[str, str]:
     """Benzinga news for many tickers at once, as each ticker's formatted article list.
 
     Reads the window in batches of ``BULK_BATCH`` symbols, then picks each
     ticker's articles as ``get_news`` does. Tickers with no article in the
     window are left out. ``cutoff`` ends the window earlier than midnight after
     ``end_date``, so a replayed morning sees only the news out before the open.
+    With ``fresh_since``, a ticker whose chosen articles are all older is left
+    out, so a story from days ago doesn't keep coming back as a fresh call.
     """
     start, end = _window(start_date, end_date)
     if cutoff:
@@ -234,6 +236,8 @@ def get_news_by_symbol(symbols: list[str], start_date: str, end_date: str, per_s
     news = {}
     for symbol, found in by_symbol.items():
         chosen = _select(list(found.values()), symbol, per_symbol)
+        if fresh_since and not any((_parse(a.get("created_at")) or fresh_since) > fresh_since for a in chosen):
+            continue
         if chosen:
             news[symbol] = _format(chosen, symbol)
     return news

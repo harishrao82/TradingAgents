@@ -176,6 +176,7 @@ def build_default_config() -> dict:
         "screen_max_tokens": 1500,       # per batch answer; thinking counts toward it
         "screen_mode": "swing",          # swing (14-60 day trades) or day (1-5 day moves, pre-market check)
         "day_lookback_days": 2,          # weekdays of news in the day mode
+        "day_fresh_only": True,          # day mode: only names with news since the prior close; the rest is context
         "day_min_dte": 0,                # expiries for day-mode trades
         "day_max_dte": 7,
         "risk_per_trade": 0.03,          # max loss per idea, as a share of --equity
