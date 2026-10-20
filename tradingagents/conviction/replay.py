@@ -6,7 +6,8 @@ For each trading day:
 2. Benzinga news from two weekdays back up to 9:25 ET that morning, screened
    with the day prompt,
 3. each strong call's pre-market move: the last 5-minute bar before 9:30
-   against the prior close (Tradier timesales, which reach back about 40 days),
+   against the prior close. Tradier keeps those bars for about 40 days, so
+   earlier mornings, and names with no pre-market trade, use the opening gap,
 4. the short list the live day mode would build: names moving against their
    news skipped, agreeing names first.
 
@@ -19,6 +20,7 @@ Market data and news only; nothing reads an account or places an order.
 from __future__ import annotations
 
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -40,6 +42,7 @@ logger = logging.getLogger(__name__)
 NEW_YORK = ZoneInfo("America/New_York")
 HOLDS = {"day": 0, "2 days": 1, "5 days": 4}   # trading days after the entry day's open, to that close
 DAY_WORKERS = 4
+TIMESALES_DAYS = 40   # how far back Tradier serves 5-minute bars
 
 
 @dataclass
@@ -50,6 +53,7 @@ class Pick:
     status: str                  # agree, disagree, flat or unknown
     picked: bool                 # on the short list the day mode would trade
     returns: dict[str, float | None] = field(default_factory=dict)  # move in the call's direction, by hold
+    gap_source: str = "pre-market"   # or "open" when no pre-market bar was available
 
 
 @dataclass
@@ -107,8 +111,22 @@ def _screen(config, news, start, date, screener):
                        per_minute=config["screen_requests_per_minute"], template=DAY_SCREEN_PROMPT)
 
 
+def _gap(ticker: str, date: str, daily, gaps) -> tuple[float | None, str]:
+    """The pre-market move against the prior close, else the opening gap."""
+    bars = daily(ticker)
+    before = [d for d in sorted(bars) if d < date]
+    prev = _num(bars[before[-1]].get("close")) if before else None
+    price, source = None, "pre-market"
+    recent = (datetime.now(NEW_YORK).date() - datetime.strptime(date, "%Y-%m-%d").date()).days <= TIMESALES_DAYS
+    if recent:
+        price = gaps(ticker, date)
+    if not price:
+        price, source = _num((bars.get(date) or {}).get("open")), "open"
+    return (price / prev - 1 if price and prev else None), source
+
+
 def replay_day(config: dict, date: str, weights: dict[str, float | None], screener=None,
-               gaps=premarket_price) -> tuple[list[Pick], int]:
+               gaps=premarket_price, daily=None) -> tuple[list[Pick], int]:
     """The strong calls for one morning, marked with the ones the day mode would have traded."""
     from .workflow import _weekdays_back, prior_close
 
@@ -118,63 +136,61 @@ def replay_day(config: dict, date: str, weights: dict[str, float | None], screen
                                      fresh_since=prior_close(date) if config["day_fresh_only"] else None)
     verdicts, failures = _screen(config, news, start, date, screener)
     strong = [v for v in verdicts if v.direction != "none" and v.conviction >= config["screen_min_conviction"]]
-    status = {}
-    gap_of = {}
+    status, gap_of, source = {}, {}, {}
     for v in strong:
         try:
-            price = gaps(v.ticker, date)
-            prev = _prior_close(v.ticker, date)
-            gap_of[v.ticker] = price / prev - 1 if price and prev else None
+            gap_of[v.ticker], source[v.ticker] = _gap(v.ticker, date, daily, gaps)
         except Exception as exc:  # one name's missing bars must not stop the day
             logger.warning("No pre-market move for %s on %s: %s", v.ticker, date, exc)
-            gap_of[v.ticker] = None
+            gap_of[v.ticker], source[v.ticker] = None, "none"
         status[v.ticker] = classify(v.direction, gap_of[v.ticker])
     candidates = [v for v in strong if not (config["day_skip_disagree"] and status[v.ticker] == "disagree")]
     picked = {v.ticker for v in shortlist(candidates, config["screen_min_conviction"], config["screen_max_names"],
                                           weights, config["screen_direction"],
                                           {t: RANK[s] for t, s in status.items()})}
-    return [Pick(date, v, gap_of[v.ticker], status[v.ticker], v.ticker in picked) for v in strong], len(failures)
-
-
-def _prior_close(ticker: str, date: str) -> float | None:
-    start = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=10)).strftime("%Y-%m-%d")
-    before = [d for d in _daily(ticker, start, date) if d["date"] < date]
-    return _num(before[-1]["close"]) if before else None
+    return [Pick(date, v, gap_of[v.ticker], status[v.ticker], v.ticker in picked, gap_source=source[v.ticker])
+            for v in strong], len(failures)
 
 
 def run_replay(config: dict, dates: list[str], etf: str = "SPY", llms: tuple | None = None,
-               progress=None, gaps=premarket_price, bars=None) -> ReplayResult:
+               progress=None, gaps=premarket_price, bars=None, workers: int = DAY_WORKERS) -> ReplayResult:
     """Replay the day screen on each of ``dates`` and score every strong call."""
     say = progress or (lambda message: None)
+    last = (datetime.strptime(dates[-1], "%Y-%m-%d") + timedelta(days=14)).strftime("%Y-%m-%d")
+    first = (datetime.strptime(dates[0], "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+    fetch = bars or (lambda ticker: {d["date"]: d for d in _daily(ticker, first, last)})
+    cache: dict[str, dict] = {}
+    lock = threading.Lock()
+
+    def daily(ticker):
+        # One read of each name's bars for the whole replay, shared by the mornings running at once.
+        with lock:
+            if ticker not in cache:
+                try:
+                    cache[ticker] = fetch(ticker)
+                except Exception as exc:
+                    logger.warning("No daily bars for %s: %s", ticker, exc)
+                    cache[ticker] = {}
+            return cache[ticker]
+
     with run_config(config):
         weights = {t: w for t, w, _ in unusual_whales.get_etf_constituents(etf)}
         say(f"{len(weights)} names in {etf}; replaying {len(dates)} mornings")
         screener = (llms or (None,))[0]
 
         def one(date):
-            found = replay_day(config, date, weights, screener, gaps)
+            found = replay_day(config, date, weights, screener, gaps, daily)
             say(f"{date}: {len(found[0])} strong calls, {sum(p.picked for p in found[0])} on the short list")
             return date, found
 
-        with ThreadPoolExecutor(DAY_WORKERS) as pool:
+        with ThreadPoolExecutor(workers) as pool:
             days = dict(pool.map(one, dates))
         picks = [p for d in dates for p in days[d][0]]
 
-        last = (datetime.strptime(dates[-1], "%Y-%m-%d") + timedelta(days=14)).strftime("%Y-%m-%d")
-        first = (datetime.strptime(dates[0], "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
-        bars = bars or (lambda ticker: {d["date"]: d for d in _daily(ticker, first, last)})
         today = datetime.now(NEW_YORK).strftime("%Y-%m-%d")
-        calendar = sorted(d for d in bars("SPY") if d < today)  # today's bar is still moving
-        cache = {}
+        calendar = sorted(d for d in daily("SPY") if d < today)  # today's bar is still moving
         for p in picks:
-            ticker = p.verdict.ticker
-            if ticker not in cache:
-                try:
-                    cache[ticker] = bars(ticker)
-                except Exception as exc:
-                    logger.warning("No daily bars for %s: %s", ticker, exc)
-                    cache[ticker] = {}
-            p.returns = outcome(p.verdict.direction, cache[ticker], calendar, p.date)
+            p.returns = outcome(p.verdict.direction, daily(p.verdict.ticker), calendar, p.date)
     return ReplayResult(etf, dates, picks, {d: days[d][1] for d in dates if days[d][1]})
 
 
@@ -206,6 +222,10 @@ def render_replay(result: ReplayResult) -> str:
         "| Group | Calls | Open to close | Open to day-2 close | Open to day-5 close |", "|---|---|---|---|---|",
         *[_row(name, group) for name, group in groups if group], "",
     ]
+    opened = sum(p.gap_source == "open" for p in picks)
+    if opened:
+        lines += [f"{opened} of {len(picks)} calls had no pre-market bar (older than {TIMESALES_DAYS} days, or no "
+                  "pre-market trade), so their move is the opening gap.", ""]
     if result.failures:
         lines += ["Names the screen couldn't read: " + ", ".join(f"{d} {n}" for d, n in result.failures.items()), ""]
     for date in result.dates:

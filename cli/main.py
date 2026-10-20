@@ -233,6 +233,7 @@ def replay(
     etf: str = typer.Argument("SPY", help="ETF whose holdings (from Unusual Whales) make the universe"),
     days: int = typer.Option(10, "--days", help="How many past sessions to replay, ending yesterday"),
     batch: bool = typer.Option(False, "--batch", help="Screen through Anthropic's Batches API: half price, slower"),
+    parallel: int = typer.Option(4, "--parallel", help="Mornings screened at once; with --batch, more is faster"),
 ):
     """Replay the pre-market day screen on past mornings and score its picks by what each stock did. Places no orders."""
     from datetime import date as _date
@@ -243,7 +244,8 @@ def replay(
     config = {**DEFAULT_CONFIG, "screen_mode": "day", "screen_batch": batch}
     try:
         dates = trading_days(_date.today().isoformat(), days)
-        result = run_replay(config, dates, etf=etf.upper(), progress=lambda m: console.print(f"[dim]{m}[/dim]"))
+        result = run_replay(config, dates, etf=etf.upper(), progress=lambda m: console.print(f"[dim]{m}[/dim]"),
+                            workers=parallel)
     except Exception as exc:  # a missing key or an unreachable vendor is a setup error
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from None

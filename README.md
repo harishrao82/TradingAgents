@@ -394,6 +394,7 @@ tradingagents screen --tickers LITE,NVDA      # a hand-picked list instead of an
 tradingagents levels SPY                      # today's levels: pivots, implied ranges, option walls, max pain, gamma flip
 tradingagents premarket SPY --batch            # day-trade mode: fresh news vs the pre-market move, levels, 0-7 day ideas
 tradingagents replay SPY --days 10 --batch     # replay the day screen on the last 10 mornings and score its picks
+tradingagents replay SPY --days 120 --batch --parallel 12  # about six months; mornings past 40 days use the opening gap
 ```
 
 For an ETF, the report opens with a view of the whole index: each name's news call weighted by its weight in the ETF, with the tilt by sector, the names driving it, and the biggest holdings that got no call. The headline counts conviction 4-5 calls only, and its bullish and bearish cut-offs are provisional until they are checked against how the index moved afterwards.
