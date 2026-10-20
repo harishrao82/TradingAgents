@@ -174,6 +174,10 @@ def build_default_config() -> dict:
         # a full SPY screen took about 3 minutes, but a batch may take up to 24 hours.
         "screen_batch": False,
         "screen_max_tokens": 1500,       # per batch answer; thinking counts toward it
+        "screen_mode": "swing",          # swing (14-60 day trades) or day (1-5 day moves, pre-market check)
+        "day_lookback_days": 2,          # weekdays of news in the day mode
+        "day_min_dte": 0,                # expiries for day-mode trades
+        "day_max_dte": 7,
         "risk_per_trade": 0.03,          # max loss per idea, as a share of --equity
         # Basket tilt (tradingagents tilt): bounds on each name's weight vs equal weight
         "tilt_min_multiplier": 0.5,

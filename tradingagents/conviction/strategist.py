@@ -45,11 +45,16 @@ class OptionsIdea(BaseModel):
     invalidation: str = Field(default="", description="What would show the thesis is wrong")
 
 
-STRATEGIST_PROMPT = """You are the options strategist on a swing-trading desk. Holding periods are days to weeks.
+SWING = "You are the options strategist on a swing-trading desk. Holding periods are days to weeks."
+DAY = ("You are the options strategist on a desk trading one- to five-day moves. Prefer the nearest expiry "
+       "that leaves room for the move, and plan to close well before expiry.")
+
+STRATEGIST_PROMPT = """{horizon}
 
 A news screen flagged {ticker}: it expects a move {direction} with conviction {conviction}/5.
 Catalyst: {catalyst}
 Screen's reason: {reason}
+{note}
 
 Propose one options trade that expresses this view, using only the data below.
 
@@ -96,11 +101,11 @@ def _earnings(ticker: str, date: str) -> tuple[str | None, str | None]:
     return found if isinstance(found, tuple) else (None, None)
 
 
-def gather(ticker: str, date: str) -> dict[str, str]:
+def gather(ticker: str, date: str, min_dte: int = MIN_DTE, max_dte: int = MAX_DTE) -> dict[str, str]:
     """The market data the strategist reads, each as text (or why it is unavailable)."""
     earnings_date, earnings_time = _earnings(ticker, date)
     return {
-        "chain": _data("get_option_chain", ticker, date, MIN_DTE, MAX_DTE, earnings_date, earnings_time),
+        "chain": _data("get_option_chain", ticker, date, min_dte, max_dte, earnings_date, earnings_time),
         "activity": _data("get_options_activity", ticker, date),
         "flow": _data("get_options_flow", ticker, date, None, None),
     }
@@ -128,12 +133,13 @@ def contracts_for(idea: OptionsIdea, equity: float | None, risk_per_trade: float
     return math.floor(equity * risk_per_trade / idea.max_loss)
 
 
-def suggest(llm, verdict: NewsVerdict, news: str, date: str, data: dict[str, str] | None = None) -> OptionsIdea | str:
+def suggest(llm, verdict: NewsVerdict, news: str, date: str, data: dict[str, str] | None = None,
+            min_dte: int = MIN_DTE, max_dte: int = MAX_DTE, horizon: str = SWING, note: str = "") -> OptionsIdea | str:
     """The strategist's idea for one name; free text when the model cannot give the structured form."""
-    data = data or gather(verdict.ticker, date)
+    data = data or gather(verdict.ticker, date, min_dte, max_dte)
     prompt = STRATEGIST_PROMPT.format(
-        ticker=verdict.ticker, direction=verdict.direction, conviction=verdict.conviction,
-        catalyst=verdict.catalyst, reason=verdict.reason, min_dte=MIN_DTE, max_dte=MAX_DTE,
+        horizon=horizon, note=note, ticker=verdict.ticker, direction=verdict.direction, conviction=verdict.conviction,
+        catalyst=verdict.catalyst, reason=verdict.reason, min_dte=min_dte, max_dte=max_dte,
         no_tools=NO_EXTERNAL_TOOLS, news=news, **data,
     )
     idea = invoke_structured(bind_structured(llm, OptionsIdea, "Options Strategist"), prompt, "Options Strategist")

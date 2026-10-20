@@ -51,6 +51,27 @@ Articles:
 {news}"""
 
 
+DAY_SCREEN_PROMPT = """You screen news for an options desk trading moves over the next one to five trading days.
+
+Below are the Benzinga articles about {ticker} published from {start} to {end}.
+Decide whether this news points to {ticker} moving up or down over the next one to five trading days, and how strongly.
+
+Conviction:
+5 - a fresh, material, company-specific catalyst released after the prior close or this morning that clearly points one way: earnings with a guidance raise or cut, a buyout offer, an FDA decision, a major contract won or lost, a probe or lawsuit, a dilutive share sale.
+4 - a clear catalyst pointing one way that is a day or two old, or smaller.
+3 - some signal, but mixed, stale or mostly about the sector rather than the company.
+2 - routine items: price-target changes, roundups, recaps of moves that already happened.
+1 - noise, or nothing about the company.
+
+Bad news counts as much as good news: score a clear negative catalyst "down" on the same scale. Use direction "none" when the news does not point either way. Judge only from these articles; do not use other knowledge of the stock. Start the catalyst with "Fresh:" when it came out after the prior close or this morning.
+
+Answer with JSON only, no other text:
+{{"direction": "up" | "down" | "none", "conviction": 1-5, "catalyst": "...", "reason": "..."}}
+
+Articles:
+{news}"""
+
+
 def _parse(text: str, ticker: str) -> NewsVerdict:
     match = re.search(r"\{.*\}", text or "", re.DOTALL)
     if not match:
@@ -58,8 +79,8 @@ def _parse(text: str, ticker: str) -> NewsVerdict:
     return NewsVerdict.model_validate({**json.loads(match.group(0)), "ticker": ticker})
 
 
-def screen_one(llm, ticker: str, news: str, start: str, end: str) -> NewsVerdict:
-    prompt = SCREEN_PROMPT.format(ticker=ticker, start=start, end=end, news=news)
+def screen_one(llm, ticker: str, news: str, start: str, end: str, template: str = SCREEN_PROMPT) -> NewsVerdict:
+    prompt = template.format(ticker=ticker, start=start, end=end, news=news)
     content = llm.invoke(prompt).content
     if isinstance(content, list):  # some providers return content blocks
         content = "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content)
@@ -103,7 +124,8 @@ class Throttle:
 
 
 def screen_news(llm, news_by_ticker: dict[str, str], start: str, end: str, workers: int = 8,
-                progress=None, per_minute: int = 0, sleep=time.sleep) -> tuple[list[NewsVerdict], dict[str, str]]:
+                progress=None, per_minute: int = 0, sleep=time.sleep,
+                template: str = SCREEN_PROMPT) -> tuple[list[NewsVerdict], dict[str, str]]:
     """Screen every name's news; returns the verdicts and the names that failed, with why.
 
     A rate-limited call is retried with a growing pause; ``per_minute`` caps how
@@ -116,7 +138,7 @@ def screen_news(llm, news_by_ticker: dict[str, str], start: str, end: str, worke
         for attempt in range(RETRIES):
             throttle.wait()
             try:
-                return ticker, screen_one(llm, ticker, news_by_ticker[ticker], start, end), None
+                return ticker, screen_one(llm, ticker, news_by_ticker[ticker], start, end, template), None
             except (ValidationError, ValueError) as exc:
                 return ticker, None, f"unreadable answer: {str(exc)[:120]}"
             except Exception as exc:  # one name's failed call must not stop the screen
@@ -138,17 +160,19 @@ def screen_news(llm, news_by_ticker: dict[str, str], start: str, end: str, worke
 
 
 def shortlist(verdicts: list[NewsVerdict], min_conviction: int, max_names: int,
-              weights: dict[str, float | None] | None = None, direction: str = "both") -> list[NewsVerdict]:
+              weights: dict[str, float | None] | None = None, direction: str = "both",
+              rank: dict[str, int] | None = None) -> list[NewsVerdict]:
     """Names with a direction and enough conviction, strongest first, then heaviest in the ETF.
 
     With ``direction="both"`` each side gets up to half the slots, so a run of
     good news can't crowd out the put ideas; slots one side leaves empty go to
-    the other.
+    the other. ``rank`` puts lower-ranked names ahead of higher ones before
+    conviction counts, as the day mode does for news the pre-market agrees with.
     """
-    weights = weights or {}
+    weights, rank = weights or {}, rank or {}
     sides = ("up", "down") if direction == "both" else (direction,)
     picked = [v for v in verdicts if v.direction in sides and v.conviction >= min_conviction]
-    picked.sort(key=lambda v: (-v.conviction, -(weights.get(v.ticker) or 0)))
+    picked.sort(key=lambda v: (rank.get(v.ticker, 0), -v.conviction, -(weights.get(v.ticker) or 0)))
     if len(sides) == 1:
         return picked[:max_names]
     by_side = {side: [v for v in picked if v.direction == side] for side in sides}
@@ -156,4 +180,5 @@ def shortlist(verdicts: list[NewsVerdict], min_conviction: int, max_names: int,
     chosen = by_side["up"][:half] + by_side["down"][:half]
     chosen += [v for v in picked if v not in chosen][: max(0, max_names - len(chosen))]
     chosen = chosen[:max_names]
-    return sorted(chosen, key=lambda v: (v.direction != "up", -v.conviction, -(weights.get(v.ticker) or 0)))
+    return sorted(chosen, key=lambda v: (v.direction != "up", rank.get(v.ticker, 0), -v.conviction,
+                                         -(weights.get(v.ticker) or 0)))
