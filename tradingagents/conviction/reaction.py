@@ -29,6 +29,7 @@ class Reaction:
     implied: float | None = None      # week's implied move as a share of the price
     status: str = "unknown"           # agree, disagree, flat or unknown
     error: str = ""
+    nearest_expiry: str | None = None  # first listed option expiry on or after the date
 
     @property
     def unreliable(self) -> bool:
@@ -53,7 +54,7 @@ def check(verdict: NewsVerdict, date: str) -> Reaction:
     bid, ask = _num(quote.get("bid")), _num(quote.get("ask"))
     gap = price / prev - 1 if price and prev else None
     spread = (ask - bid) / ((ask + bid) / 2) if bid and ask else None
-    implied = None
+    implied, expiries = None, []
     try:
         expiries = near_expiries(verdict.ticker, date)
         if expiries and price:
@@ -62,7 +63,8 @@ def check(verdict: NewsVerdict, date: str) -> Reaction:
             implied = found[1] / (prev or price) if found else None
     except Exception as exc:  # the implied move is context; the gap still stands without it
         logger.warning("No implied move for %s: %s", verdict.ticker, exc)
-    return Reaction(gap, spread, implied, classify(verdict.direction, gap))
+    return Reaction(gap, spread, implied, classify(verdict.direction, gap),
+                    nearest_expiry=expiries[0] if expiries else None)
 
 
 def check_all(verdicts: list[NewsVerdict], min_conviction: int, date: str) -> dict[str, Reaction]:
@@ -82,7 +84,12 @@ def _pct(value: float | None, signed: bool = True) -> str:
     return "?" if value is None else (f"{value:+.1%}" if signed else f"±{value:.1%}")
 
 
-def render(verdicts: list[NewsVerdict], reactions: dict[str, Reaction]) -> str:
+def tradable(reaction: Reaction, last_expiry: str) -> bool:
+    """Whether the name lists an expiry by ``last_expiry``; unknown counts as tradable."""
+    return reaction.nearest_expiry is None or reaction.nearest_expiry <= last_expiry
+
+
+def render(verdicts: list[NewsVerdict], reactions: dict[str, Reaction], horizon: str | None = None) -> str:
     by_ticker = {v.ticker: v for v in verdicts}
     order = sorted(reactions, key=lambda t: (RANK[reactions[t].status], -by_ticker[t].conviction, t))
     lines = ["## News against the pre-market move", "",
@@ -93,6 +100,8 @@ def render(verdicts: list[NewsVerdict], reactions: dict[str, Reaction]) -> str:
     for t in order:
         r, v = reactions[t], by_ticker[t]
         status = r.status + (" (wide quote)" if r.status != "unknown" and r.unreliable else "")
+        if r.nearest_expiry and r.nearest_expiry > (horizon or r.nearest_expiry):
+            status += f"; no options before {r.nearest_expiry}"
         lines.append(f"| {t} | {v.direction} {v.conviction} | {_pct(r.gap)} | {_pct(r.implied, False)} | "
                      f"{status} | {v.catalyst} |")
     return "\n".join(lines) + "\n"

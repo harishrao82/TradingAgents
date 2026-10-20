@@ -14,6 +14,7 @@ historical date gets an explicit "not available" rather than today's calendar.
 """
 import logging
 import os
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytz
@@ -28,6 +29,8 @@ from tradingagents.dataflows.errors import (
 logger = logging.getLogger(__name__)
 
 UW_API_BASE = "https://api.unusualwhales.com/api"
+RETRY_PAUSE = 2  # seconds before retrying a dropped connection
+_sleep = time.sleep
 
 # Network timeout (seconds) so a stalled request can't hang the agents,
 # mirroring the FRED and Alpha Vantage clients.
@@ -80,15 +83,22 @@ def _request(path: str, params: dict | None = None) -> list:
     is "unavailable", which says nothing about the instrument.
     """
     api_key = get_api_key()
-    try:
-        response = requests.get(
-            f"{UW_API_BASE}/{path}",
-            params=params or {},
-            headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
-            timeout=REQUEST_TIMEOUT,
-        )
-    except requests.RequestException as exc:
-        raise VendorUnavailableError(f"Unusual Whales request failed: {exc}") from None
+    # A dropped connection ("connection reset by peer") is retried once after a short pause.
+    for attempt in range(2):
+        try:
+            response = requests.get(
+                f"{UW_API_BASE}/{path}",
+                params=params or {},
+                headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+                timeout=REQUEST_TIMEOUT,
+            )
+            break
+        except requests.ConnectionError as exc:
+            if attempt:
+                raise VendorUnavailableError(f"Unusual Whales request failed: {exc}") from None
+            _sleep(RETRY_PAUSE)
+        except requests.RequestException as exc:
+            raise VendorUnavailableError(f"Unusual Whales request failed: {exc}") from None
     if response.status_code == 401:
         raise UnusualWhalesNotConfiguredError(
             "Unusual Whales rejected the API token (401). Check UNUSUAL_WHALES_API_KEY."

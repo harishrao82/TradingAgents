@@ -447,22 +447,42 @@ def test_day_mode_ranks_agreeing_names_first_and_asks_for_short_expiries(monkeyp
     monkeypatch.setattr(strategist_mod, "gather",
                         lambda ticker, date, lo, hi: seen.update({ticker: (lo, hi)}) or
                         {"chain": "CHAIN", "activity": "", "flow": ""})
-    gaps = {"GE": -0.039, "RTX": 0.018}
-    monkeypatch.setattr(reaction, "check", lambda v, date: reaction.Reaction(gaps[v.ticker], 0.001, 0.05,
-                                                                              reaction.classify(v.direction, gaps[v.ticker])))
+    gaps = {"GE": -0.039, "RTX": 0.018, "NOC": 0.008}
+    expiry = {"GE": "2026-10-16", "RTX": "2026-10-16", "NOC": "2026-11-20"}  # NOC lists no weekly
+    monkeypatch.setattr(reaction, "check", lambda v, date: reaction.Reaction(
+        gaps[v.ticker], 0.001, 0.05, reaction.classify(v.direction, gaps[v.ticker]), nearest_expiry=expiry[v.ticker]))
     screener = _ScreenLLM({
         "GE": '{"direction": "up", "conviction": 5, "catalyst": "Fresh: beat and raise", "reason": "r"}',
         "RTX": '{"direction": "up", "conviction": 4, "catalyst": "Fresh: beat and raise", "reason": "r"}',
+        "NOC": '{"direction": "up", "conviction": 5, "catalyst": "Fresh: beat and raise", "reason": "r"}',
     })
     strategist = _StrategistLLM(_idea())
     config = {**default_config.DEFAULT_CONFIG, "screen_mode": "day", "screen_max_names": 1}
 
-    result = workflow.run_conviction_screen(config, "2026-10-12", tickers=["GE", "RTX"], llms=(screener, strategist))
+    result = workflow.run_conviction_screen(config, "2026-10-12", tickers=["GE", "RTX", "NOC"], llms=(screener, strategist))
     text = workflow.render_report(result)
 
     assert result.start == "2026-10-09"  # two weekdays back from Monday
-    assert [v.ticker for v in result.shortlist] == ["RTX"]  # agrees with its gap, so it beats GE's 5/5
+    # RTX agrees with its gap, so it beats GE's 5/5; NOC agrees too but has no expiry within the week.
+    assert [v.ticker for v in result.shortlist] == ["RTX"]
+    assert "| NOC | up 5 | +0.8% | ±5.0% | agree; no options before 2026-11-20 |" in workflow.render_report(result)
     assert seen == {"RTX": (0, 7)} and "one- to five-day moves" in strategist.prompts[0]
     assert "# custom list pre-market day-trade screen" in text
     assert "| GE | up 5 | -3.9% | ±5.0% | disagree | Fresh: beat and raise |" in text
     assert workflow.save_report(result, text, str(tmp_path)).name.endswith("_day.md")
+
+
+def test_unusual_whales_retries_a_dropped_connection_once(monkeypatch):
+    monkeypatch.setenv("UNUSUAL_WHALES_API_KEY", "k")
+    monkeypatch.setattr(unusual_whales, "_sleep", lambda s: None)
+    calls = []
+
+    def get(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise unusual_whales.requests.ConnectionError("Connection reset by peer")
+        return _response({"data": [{"expiry": "2026-10-23", "max_pain": "770"}]})
+
+    monkeypatch.setattr(unusual_whales.requests, "get", get)
+
+    assert unusual_whales.get_max_pain("SPY") == {"2026-10-23": 770.0} and len(calls) == 2
