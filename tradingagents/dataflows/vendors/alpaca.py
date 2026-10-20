@@ -213,11 +213,19 @@ def get_news_by_symbol(symbols: list[str], start_date: str, end_date: str, per_s
     start, end = _window(start_date, end_date)
     wanted = list(dict.fromkeys(s.upper() for s in symbols))
     by_symbol: dict[str, dict] = {s: {} for s in wanted}
-    for i in range(0, len(wanted), BULK_BATCH):
-        batch = wanted[i:i + BULK_BATCH]
+    # Benzinga files class shares under the root (BRK) and tags them BRK/B, never BRK.B,
+    # so a dotted ticker is queried by its root and matched on any of those tags.
+    owners: dict[str, list[str]] = {}
+    for symbol in wanted:
+        root, _, share = symbol.partition(".")
+        for tag in {symbol, root, f"{root}/{share}"} if share else {symbol}:
+            owners.setdefault(tag, []).append(symbol)
+    queries = list(dict.fromkeys(s.partition(".")[0] for s in wanted))
+    for i in range(0, len(queries), BULK_BATCH):
+        batch = queries[i:i + BULK_BATCH]
         for article in _fetch(start, end, ",".join(batch), None, BULK_MAX_PAGES):
-            for symbol in article.get("symbols") or []:
-                if symbol in by_symbol:
+            for tag in article.get("symbols") or []:
+                for symbol in owners.get(tag, []):
                     by_symbol[symbol][article.get("id")] = article
     news = {}
     for symbol, found in by_symbol.items():

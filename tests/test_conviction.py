@@ -74,6 +74,23 @@ def test_bulk_news_batches_symbols_and_splits_by_ticker(monkeypatch):
     assert "Tagged: MSFT, AAPL" in news["MSFT"]
 
 
+def test_class_shares_are_queried_by_root_and_matched_on_slash_tags(monkeypatch):
+    monkeypatch.setenv("ALPACA_API_KEY", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+    requested = []
+
+    def get(url, params=None, headers=None, timeout=None):
+        requested.append(params["symbols"])
+        return _response({"news": [_article(1, "Berkshire buys OxyChem", ["BRK", "BRK/A", "BRK/B", "OXY"])]})
+
+    monkeypatch.setattr(alpaca.requests, "get", get)
+
+    news = alpaca.get_news_by_symbol(["BRK.B", "OXY"], "2026-10-10", "2026-10-12", per_symbol=5)
+
+    assert requested == ["BRK,OXY"]
+    assert "Berkshire buys OxyChem" in news["BRK.B"] and "Berkshire buys OxyChem" in news["OXY"]
+
+
 class _ScreenLLM:
     """Answers the screen prompt from a ticker -> reply table."""
 
