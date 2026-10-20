@@ -8,6 +8,11 @@
 3. The strongest calls go to the options strategist on the deep model tier,
    which suggests a defined-risk trade for each.
 
+The day mode (``screen_mode = "day"``) reads one to two weekdays of news for a
+one- to five-day move, checks each strong call against this morning's
+pre-market move, ranks the names the market agrees with first, and asks for
+trades on 0-7 day expiries. An ETF screen dated today opens with its levels.
+
 Analysis only: nothing here reads an account or places an order.
 """
 from __future__ import annotations
@@ -31,8 +36,9 @@ from tradingagents.llm_clients.factory import (
 from .batch import screen_news_batch
 from .index_view import render_index_view
 from .levels import get_levels
-from .screen import NewsVerdict, screen_news, shortlist
-from .strategist import OptionsIdea, contracts_for, max_gain, suggest
+from .reaction import RANK, Reaction, check_all, render as render_reactions
+from .screen import DAY_SCREEN_PROMPT, SCREEN_PROMPT, NewsVerdict, screen_news, shortlist
+from .strategist import DAY, SWING, OptionsIdea, contracts_for, max_gain, suggest
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +65,8 @@ class ScreenResult:
     holdings: dict[str, tuple[float | None, str | None]] = field(default_factory=dict)
     news_names: list[str] = field(default_factory=list)
     levels: str = ""
+    mode: str = "swing"
+    reactions: dict[str, Reaction] = field(default_factory=dict)
 
 
 def screen_llm(config: dict):
@@ -87,12 +95,14 @@ def run_conviction_screen(config: dict, date: str, etf: str = "SPY", tickers: li
 
 def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> ScreenResult:
     say = progress or (lambda message: None)
+    day = config["screen_mode"] == "day"
+    template = DAY_SCREEN_PROMPT if day else SCREEN_PROMPT
     holdings = ({t: (w, sector) for t, w, sector in unusual_whales.get_etf_constituents(etf)} if not tickers
                 else {t.upper(): (None, None) for t in tickers})
     weights = {t: w for t, (w, _) in holdings.items()}
     say(f"{len(weights)} names in {etf if not tickers else 'the list'}")
 
-    start = _weekdays_back(date, config["screen_lookback_days"])
+    start = _weekdays_back(date, config["day_lookback_days" if day else "screen_lookback_days"])
     news = alpaca.get_news_by_symbol(list(weights), start, date, config["screen_articles_per_name"])
     say(f"{len(news)} names have Benzinga news from {start} to {date}")
 
@@ -102,21 +112,28 @@ def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> Scr
             raise ValueError("Batch screening uses Anthropic's Batches API; set screen_llm_provider to anthropic.")
         verdicts, failures = screen_news_batch(
             screener or anthropic.Anthropic(), config["screen_llm"], news, start, date,
-            max_tokens=config["screen_max_tokens"], progress=say,
+            max_tokens=config["screen_max_tokens"], progress=say, template=template,
         )
     else:
         verdicts, failures = screen_news(
             screener or screen_llm(config), news, start, date, config["screen_workers"],
             per_minute=config["screen_requests_per_minute"],
             progress=lambda done, total, ticker: say(f"screened {done}/{total}") if done % 50 == 0 or done == total else None,
+            template=template,
         )
+    reactions, rank = {}, {}
+    if day:
+        say("checking strong calls against the pre-market move")
+        reactions = check_all(verdicts, config["screen_min_conviction"], date)
+        rank = {t: RANK[r.status] for t, r in reactions.items()}
     picked = shortlist(verdicts, config["screen_min_conviction"], config["screen_max_names"], weights,
-                       config["screen_direction"])
+                       config["screen_direction"], rank)
     say(f"{len(picked)} names on the short list: {', '.join(v.ticker for v in picked) or 'none'}")
 
     result = ScreenResult(etf=etf if not tickers else "custom list", date=date, start=start, universe=len(weights),
                           with_news=len(news), verdicts=verdicts, failures=failures, shortlist=picked,
-                          screen_model=config["screen_llm"], holdings=holdings, news_names=list(news))
+                          screen_model=config["screen_llm"], holdings=holdings, news_names=list(news),
+                          mode=config["screen_mode"], reactions=reactions)
     if not tickers and not is_historical(date):
         try:
             result.levels = get_levels(etf, date)
@@ -129,8 +146,14 @@ def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> Scr
     strategist = strategist or create_tier_client(config, "deep").get_llm()
     for verdict in picked:
         say(f"strategist: {verdict.ticker}")
+        note = ""
+        if day and verdict.ticker in reactions and reactions[verdict.ticker].status == "disagree":
+            note = ("This morning's pre-market move goes against the news. The plan must say to wait for the first "
+                    "15-30 minutes after the open and enter only if the price turns the news's way.\n")
+        dte = (config["day_min_dte"], config["day_max_dte"]) if day else (14, 60)
         try:
-            idea = suggest(strategist, verdict, news[verdict.ticker], date)
+            idea = suggest(strategist, verdict, news[verdict.ticker], date, min_dte=dte[0], max_dte=dte[1],
+                           horizon=DAY if day else SWING, note=note)
         except Exception as exc:
             logger.warning("Strategist failed for %s: %s", verdict.ticker, exc)
             idea = f"The strategist failed: {exc}"
@@ -169,7 +192,7 @@ def _render_idea(item: Idea, equity: float | None, risk: float) -> str:
 
 def render_report(result: ScreenResult, equity: float | None = None, risk: float = 0.03) -> str:
     lines = [
-        f"# {result.etf} conviction screen, {result.date}",
+        f"# {result.etf} {'pre-market day-trade' if result.mode == 'day' else 'conviction'} screen, {result.date}",
         "",
         f"News from {result.start} to {result.date}, screened by {result.screen_model}. "
         f"{result.universe} names, {result.with_news} with news, {len(result.verdicts)} screened, "
@@ -177,10 +200,10 @@ def render_report(result: ScreenResult, equity: float | None = None, risk: float
         "",
     ]
     view = render_index_view(result.etf, result.verdicts, result.failures, result.holdings, set(result.news_names))
-    if view:
-        lines.append(view)
-    if result.levels:
-        lines.append(result.levels)
+    sections = [result.levels, view] if result.mode == "day" else [view, result.levels]
+    lines += [section for section in sections if section]
+    if result.reactions:
+        lines.append(render_reactions(result.verdicts, result.reactions))
     lines += [_render_idea(item, equity, risk) for item in result.ideas]
     if result.shortlist and not result.ideas:
         lines.append("Short list: " + ", ".join(f"{v.ticker} ({v.direction} {v.conviction})" for v in result.shortlist) + "\n")
@@ -195,7 +218,8 @@ def render_report(result: ScreenResult, equity: float | None = None, risk: float
 def save_report(result: ScreenResult, text: str, results_dir: str) -> Path:
     name = result.etf.replace(" ", "_")
     # The run time is in the name, so a second screen the same day doesn't overwrite the first.
-    path = Path(results_dir) / "screens" / f"{name}_{result.date}_{datetime.now():%H%M}.md"
+    suffix = "_day" if result.mode == "day" else ""
+    path = Path(results_dir) / "screens" / f"{name}_{result.date}_{datetime.now():%H%M}{suffix}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
     return path

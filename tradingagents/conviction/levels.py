@@ -1,29 +1,40 @@
-"""Price levels to watch in an index ETF for the day and the week, from Tradier market data.
+"""Price levels to watch in an index ETF for the day and the week.
 
-- The prior session's high, low and close, last week's high and low, and the
-  classic floor pivots built from the prior session.
-- The overnight range: after-hours since the prior close plus today's pre-market.
-- The expected move for the nearest expiry and for this week's, from the
-  at-the-money straddle.
-- Where options open interest sits on the expiries out to this week's: the
-  call wall (most call open interest above the price), the put wall (most put
-  open interest below it) and the strike with the most gamma, using the usual
-  convention that calls add gamma and puts take it away. That convention is a
-  rough read of dealer positioning, not a measurement of it.
+From Tradier:
+- the prior session's high, low and close, last week's high and low, and the
+  classic floor pivots built from the prior session
+- the overnight range: after hours since the prior close plus today's pre-market
+- the expected move for the nearest expiry and for this week's, from the
+  at-the-money straddle
+- the call wall (most call open interest above the price) and put wall (most
+  put open interest below it) for the nearest expiry and for this week's
+- VIX and its change
 
-Live only, like the rest of Tradier: a past date gets nothing. Market data
-endpoints only; nothing reads the account or places orders.
+From Unusual Whales, when the plan allows:
+- max pain for those two expiries
+- net open-interest gamma by strike: the flip (where it turns from negative
+  below to positive above) and the biggest negative and positive strikes.
+  Negative gamma usually means dealer hedging adds to moves; positive damps them.
+
+Levels within ``ZONE`` of each other are merged into one zone. Live only; market
+data endpoints only, nothing reads the account or places orders.
 """
 from __future__ import annotations
 
+import itertools
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from tradingagents.dataflows.date_window import is_historical
+from tradingagents.dataflows.vendors import unusual_whales
 from tradingagents.dataflows.vendors.tradier import _as_list, _num, _quote, _request
 
-MAX_CHAINS = 6       # chains fetched for open interest, nearest expiries first
-STRIKE_BAND = 0.07   # strikes within 7% of the price count toward walls and gamma
+logger = logging.getLogger(__name__)
+
+ZONE = 0.003         # levels within 0.3% of each other form one zone
+GAMMA_BAND = 0.04    # strikes within 4% of the price count toward the gamma read
+WALL_BAND = 0.07     # and within 7% toward the open-interest walls
 
 
 @dataclass
@@ -32,7 +43,7 @@ class Levels:
     date: str
     spot: float
     spot_source: str
-    rows: list[tuple[float, str, str]] = field(default_factory=list)  # (price, level, note)
+    rows: list[tuple[float, str]] = field(default_factory=list)  # (price, label)
     notes: list[str] = field(default_factory=list)
 
 
@@ -41,6 +52,14 @@ def _mid(option: dict) -> float | None:
     if bid and ask:
         return (bid + ask) / 2
     return _num(option.get("last"))
+
+
+def quote_price(quote: dict) -> tuple[float | None, str]:
+    """The quote's bid/ask mid, which moves before the open when ``last`` doesn't; else the last trade."""
+    bid, ask = _num(quote.get("bid")), _num(quote.get("ask"))
+    if bid and ask:
+        return (bid + ask) / 2, "bid/ask mid"
+    return _num(quote.get("last")) or _num(quote.get("prevclose")), "last trade"
 
 
 def straddle(options: list, spot: float) -> tuple[float, float] | None:
@@ -54,28 +73,30 @@ def straddle(options: list, spot: float) -> tuple[float, float] | None:
     return None
 
 
-def positioning(options: list, spot: float) -> dict:
-    """Call wall, put wall, biggest-gamma strike and net gamma ($ per 1% move) near the price."""
-    call_oi, put_oi, gamma = {}, {}, {}
+def walls(options: list, spot: float) -> tuple[float | None, float | None]:
+    """The strike with the most call open interest above the price and the most put open interest below."""
+    calls, puts = {}, {}
     for o in options:
         strike, oi = _num(o.get("strike")), _num(o.get("open_interest")) or 0
-        if strike is None or abs(strike / spot - 1) > STRIKE_BAND:
+        if strike is None or not oi or abs(strike / spot - 1) > WALL_BAND:
             continue
-        g = _num((o.get("greeks") or {}).get("gamma")) or 0
-        sign = 1 if o.get("option_type") == "call" else -1
-        gamma[strike] = gamma.get(strike, 0) + sign * g * oi * 100 * spot * spot * 0.01
-        side = call_oi if sign > 0 else put_oi
-        side[strike] = side.get(strike, 0) + oi
-    above = {s: oi for s, oi in call_oi.items() if s > spot and oi}
-    below = {s: oi for s, oi in put_oi.items() if s < spot and oi}
-    return {
-        "call_wall": max(above, key=above.get) if above else None,
-        "call_wall_oi": max(above.values()) if above else 0,
-        "put_wall": max(below, key=below.get) if below else None,
-        "put_wall_oi": max(below.values()) if below else 0,
-        "gamma_strike": max(gamma, key=lambda s: abs(gamma[s])) if gamma else None,
-        "net_gamma": sum(gamma.values()),
-    }
+        if o.get("option_type") == "call" and strike > spot:
+            calls[strike] = calls.get(strike, 0) + oi
+        elif o.get("option_type") == "put" and strike < spot:
+            puts[strike] = puts.get(strike, 0) + oi
+    return (max(calls, key=calls.get) if calls else None, max(puts, key=puts.get) if puts else None)
+
+
+def gamma_read(gamma: dict[float, float], spot: float) -> dict:
+    """The flip (the strike nearest the price where net gamma turns from negative below to positive) and the extremes."""
+    near = {s: g for s, g in gamma.items() if abs(s / spot - 1) <= GAMMA_BAND and g}
+    if not near:
+        return {}
+    strikes = sorted(near)
+    flips = [hi for lo, hi in itertools.pairwise(strikes) if near[lo] < 0 < near[hi]]
+    return {"flip": min(flips, key=lambda s: abs(s - spot)) if flips else None,
+            "most_negative": min(near, key=near.get), "most_positive": max(near, key=near.get),
+            "net": sum(near.values())}
 
 
 def pivots(high: float, low: float, close: float) -> dict[str, float]:
@@ -83,80 +104,130 @@ def pivots(high: float, low: float, close: float) -> dict[str, float]:
     return {"R2": p + (high - low), "R1": 2 * p - low, "Pivot": p, "S1": 2 * p - high, "S2": p - (high - low)}
 
 
-def _week_end(date: str) -> str:
+def week_end(date: str) -> str:
     day = datetime.strptime(date, "%Y-%m-%d")
     return (day + timedelta(days=(4 - day.weekday()) % 7)).strftime("%Y-%m-%d")
 
 
+def _week(date: str) -> tuple[int, int]:
+    return tuple(datetime.strptime(date, "%Y-%m-%d").isocalendar()[:2])
+
+
 def compute(ticker: str, date: str, quote: dict, days: list[dict], overnight: list[dict],
-            chains: dict[str, list]) -> Levels:
-    """Levels from already-fetched data: daily bars, overnight bars and chains by expiry."""
-    before = [d for d in days if d.get("date") and d["date"] < date]
-    prior = before[-1] if before else None
-    # The quote's last trade can be yesterday's close before the open, so a newer
-    # extended-hours bar wins.
-    spot, source = _num(quote.get("last")), "last trade"
-    traded = (_num(quote.get("trade_date")) or 0) / 1000
-    if overnight and _num(overnight[-1].get("close")) and (_num(overnight[-1].get("timestamp")) or 0) > traded:
-        spot, source = _num(overnight[-1]["close"]), f"extended hours, {overnight[-1].get('time', '')}".rstrip(", ")
-    spot = spot or _num(quote.get("prevclose"))
+            chains: dict[str, list], vix: dict | None = None, max_pain: dict | None = None,
+            gamma: dict | None = None) -> Levels:
+    """Levels from already-fetched data: daily bars, overnight bars, chains by expiry and the extras."""
+    spot, source = quote_price(quote)
     levels = Levels(ticker, date, spot, source)
     add = levels.rows.append
 
-    if prior:
+    before = [d for d in days if d.get("date") and d["date"] < date]
+    if before:
+        prior = before[-1]
         high, low, close = (_num(prior[k]) for k in ("high", "low", "close"))
-        add((high, "Prior high", prior["date"]))
-        add((low, "Prior low", prior["date"]))
-        add((close, "Prior close", prior["date"]))
+        add((high, "prior high"))
+        add((low, "prior low"))
+        add((close, "prior close"))
         for name, price in pivots(high, low, close).items():
-            if name != "Pivot" or abs(price - close) > 0.01:
-                add((price, name if name == "Pivot" else f"{name} (floor pivot)", "from the prior session"))
-        week = datetime.strptime(date, "%Y-%m-%d").isocalendar()[:2]
-        last_week = [d for d in before if datetime.strptime(d["date"], "%Y-%m-%d").isocalendar()[:2] < week]
+            add((price, "pivot" if name == "Pivot" else name))
+        last_week = [d for d in before if _week(d["date"]) < _week(date)]
         if last_week:
-            wk = datetime.strptime(last_week[-1]["date"], "%Y-%m-%d").isocalendar()[:2]
-            bars = [d for d in last_week if datetime.strptime(d["date"], "%Y-%m-%d").isocalendar()[:2] == wk]
-            add((max(_num(d["high"]) for d in bars), "Last week's high", f"week of {bars[0]['date']}"))
-            add((min(_num(d["low"]) for d in bars), "Last week's low", f"week of {bars[0]['date']}"))
-    if overnight:
-        highs = [_num(b.get("high")) for b in overnight if _num(b.get("high"))]
-        lows = [_num(b.get("low")) for b in overnight if _num(b.get("low"))]
-        if highs and lows:
-            add((max(highs), "Overnight high", "after hours + pre-market"))
-            add((min(lows), "Overnight low", "after hours + pre-market"))
+            bars = [d for d in last_week if _week(d["date"]) == _week(last_week[-1]["date"])]
+            add((max(_num(d["high"]) for d in bars), "last week's high"))
+            add((min(_num(d["low"]) for d in bars), "last week's low"))
+        levels.notes.append(f"{ticker} {spot:.2f} ({source}), {spot / close - 1:+.2%} from the prior close "
+                            f"of {close:.2f}.")
+    highs = [_num(b.get("high")) for b in overnight if _num(b.get("high"))]
+    lows = [_num(b.get("low")) for b in overnight if _num(b.get("low"))]
+    if highs and lows:
+        add((max(highs), "overnight high"))
+        add((min(lows), "overnight low"))
 
     expiries = sorted(chains)
     if expiries:
-        week_end = _week_end(date)
-        weekly = next((e for e in expiries if e >= week_end), expiries[-1])
-        moves = [("Day", expiries[0])] + ([("Week", weekly)] if weekly != expiries[0] else [])
-        for label, expiry in moves:
+        weekly = next((e for e in expiries if e >= week_end(date)), expiries[-1])
+        for label, expiry in [("today's", expiries[0])] + ([("week's", weekly)] if weekly != expiries[0] else []):
             found = straddle(chains[expiry], spot)
-            if not found:
-                levels.notes.append(f"No priced at-the-money straddle for {expiry}.")
-                continue
-            strike, move = found
-            add((spot + move, f"{label} expected move, high", f"{expiry} straddle ±{move:.2f}"))
-            add((spot - move, f"{label} expected move, low", f"{expiry} straddle ±{move:.2f}"))
-        pos = positioning([o for e in expiries if e <= weekly for o in chains[e]], spot)
-        through = f"expiries {expiries[0]} to {weekly}"
-        if pos["call_wall"]:
-            add((pos["call_wall"], "Call wall", f"{pos['call_wall_oi']:,.0f} calls open, {through}"))
-        if pos["put_wall"]:
-            add((pos["put_wall"], "Put wall", f"{pos['put_wall_oi']:,.0f} puts open, {through}"))
-        if pos["gamma_strike"]:
-            add((pos["gamma_strike"], "Most gamma", through))
-        net = pos["net_gamma"]
-        levels.notes.append(
-            f"Net gamma through {weekly}: {net / 1e9:+.2f}B per 1% move. "
-            + ("Positive usually means dealer hedging damps moves, so levels tend to hold."
-               if net > 0 else "Negative usually means dealer hedging adds to moves, so breaks can run.")
-        )
+            if found:
+                move = found[1]
+                add((spot + move, f"top of {label} implied range"))
+                add((spot - move, f"bottom of {label} implied range"))
+                levels.notes.append(f"Implied move to {expiry}: ±{move:.2f} ({move / spot:.2%}), "
+                                    f"{spot - move:.2f} to {spot + move:.2f}.")
+            call_wall, put_wall = walls(chains[expiry], spot)
+            if call_wall:
+                add((call_wall, f"{label} call wall"))
+            if put_wall:
+                add((put_wall, f"{label} put wall"))
+            if max_pain and max_pain.get(expiry):
+                add((max_pain[expiry], f"{label} max pain"))
+    read = gamma_read(gamma or {}, spot)
+    if read:
+        if read["flip"]:
+            add((read["flip"], "gamma flip"))
+            levels.notes.append("Gamma: " + ("below the flip, in negative gamma, so moves can speed up."
+                                             if spot < read["flip"] else
+                                             "above the flip, in positive gamma, so moves tend to be damped."))
+        else:
+            levels.notes.append(f"Gamma: net {'positive' if read['net'] > 0 else 'negative'} near the price, no flip.")
+        add((read["most_negative"], "biggest negative gamma"))
+        add((read["most_positive"], "biggest positive gamma"))
+    if vix:
+        level, prev = quote_price(vix)[0], _num(vix.get("prevclose"))
+        if level:
+            levels.notes.append(f"VIX {level:.2f}" + (f" ({level / prev - 1:+.1%})." if prev else "."))
     return levels
 
 
-def fetch(ticker: str, date: str) -> tuple[dict, list, list, dict]:
-    """Quote, daily bars, overnight bars and the chains out to this week's expiry, from Tradier."""
+def zones(rows: list[tuple[float, str]], spot: float) -> list[tuple[float, float, list[str]]]:
+    """Rows merged into zones no wider than ``ZONE``, never straddling the price, highest first, as (low, high, labels)."""
+    merged: list[tuple[float, float, list[str]]] = []
+    for price, label in sorted(rows, key=lambda r: -r[0]):
+        if merged and merged[-1][1] - price <= spot * ZONE and not merged[-1][0] >= spot > price:
+            _, high, labels = merged[-1]
+            merged[-1] = (price, high, labels + [label])
+        else:
+            merged.append((price, price, [label]))
+    return merged
+
+
+def render(levels: Levels) -> str:
+    lines = [f"## {levels.ticker} levels, {levels.date}", "", *levels.notes, "", "| Zone | What's there |", "|---|---|"]
+    now = f"| **{levels.spot:.2f}** | **now** |"
+    for low, high, labels in zones(levels.rows, levels.spot):
+        if now and high < levels.spot:
+            lines.append(now)
+            now = ""
+        span = f"{low:.2f}" if high - low < 0.005 else f"{low:.2f}-{high:.2f}"
+        lines.append(f"| {span} | {', '.join(dict.fromkeys(labels))} |")
+    if now:
+        lines.append(now)
+    lines += ["", "Before the open, option quotes are the last session's, so implied ranges, walls and gamma "
+              "reflect the prior close.", ""]
+    return "\n".join(lines) + "\n"
+
+
+def _extra(label, call, *args):
+    try:
+        return call(*args)
+    except Exception as exc:  # each extra is optional; the rest of the levels still stand
+        logger.warning("No %s: %s", label, exc)
+        return None
+
+
+def near_expiries(ticker: str, date: str) -> list[str]:
+    """The nearest expiry on or after ``date`` and this week's (the first on or after Friday)."""
+    listed = sorted(_as_list((_request("markets/options/expirations", {"symbol": ticker})
+                              .get("expirations") or {}).get("date")))
+    upcoming = [e for e in listed if e >= date]
+    if not upcoming:
+        return []
+    weekly = next((e for e in upcoming if e >= week_end(date)), upcoming[-1])
+    return list(dict.fromkeys([upcoming[0], weekly]))
+
+
+def fetch(ticker: str, date: str) -> dict:
+    """Everything ``compute`` needs, from Tradier and Unusual Whales."""
     quote = _quote(ticker)
     start = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=21)).strftime("%Y-%m-%d")
     history = _request("markets/history", {"symbol": ticker, "interval": "daily", "start": start, "end": date})
@@ -164,44 +235,24 @@ def fetch(ticker: str, date: str) -> tuple[dict, list, list, dict]:
     prior = [d for d in days if d.get("date", "") < date]
     overnight = []
     if prior:
-        try:
-            series = _request("markets/timesales", {
-                "symbol": ticker, "interval": "5min", "session_filter": "all",
-                "start": f"{prior[-1]['date']} 16:00", "end": f"{date} 09:29"})
-            overnight = _as_list((series.get("series") or {}).get("data"))
-        except Exception:  # the overnight range is a nicety; the rest still stands
-            overnight = []
-    expirations = _as_list((_request("markets/options/expirations", {"symbol": ticker})
-                            .get("expirations") or {}).get("date"))
-    week_end = _week_end(date)
-    wanted = [e for e in sorted(expirations) if e >= date]
-    wanted = [e for e in wanted if e <= week_end] or wanted[:1]
-    if wanted and wanted[-1] < week_end:
-        later = [e for e in sorted(expirations) if e > week_end]
-        wanted += later[:1]
+        series = _extra("overnight range", _request, "markets/timesales", {
+            "symbol": ticker, "interval": "5min", "session_filter": "all",
+            "start": f"{prior[-1]['date']} 16:00", "end": f"{date} 09:29"})
+        overnight = _as_list(((series or {}).get("series") or {}).get("data"))
     chains = {}
-    for expiry in wanted[:MAX_CHAINS]:
+    for expiry in near_expiries(ticker, date):
         chain = _request("markets/options/chains", {"symbol": ticker, "expiration": expiry, "greeks": "true"})
         options = _as_list((chain.get("options") or {}).get("option"))
         if options:
             chains[expiry] = options
-    return quote, days, overnight, chains
-
-
-def render(levels: Levels) -> str:
-    lines = [f"## {levels.ticker} levels, {levels.date}", "",
-             f"Price {levels.spot:.2f} ({levels.spot_source}).", "",
-             "| Price | Level | From |", "|---|---|---|"]
-    rows = sorted(levels.rows + [(levels.spot, "**Now**", levels.spot_source)], key=lambda r: -r[0])
-    lines += [f"| {price:.2f} | {name} | {note} |" for price, name, note in rows]
-    lines += [""] + [f"{note}" for note in levels.notes]
-    lines += ["", "Before the open, option quotes are the last session's, so the expected moves and gamma "
-              "reflect yesterday's close.", ""]
-    return "\n".join(lines) + "\n"
+    return {"quote": quote, "days": days, "overnight": overnight, "chains": chains,
+            "vix": _extra("VIX", _quote, "VIX"),
+            "max_pain": _extra("max pain", unusual_whales.get_max_pain, ticker),
+            "gamma": _extra("gamma by strike", unusual_whales.get_gamma_by_strike, ticker)}
 
 
 def get_levels(ticker: str, date: str) -> str:
     """The levels section for ``ticker`` today; a past date has no live data."""
     if is_historical(date):
         return f"## {ticker} levels\n\nLive data only; none for {date}.\n"
-    return render(compute(ticker, date, *fetch(ticker, date)))
+    return render(compute(ticker, date, **fetch(ticker, date)))

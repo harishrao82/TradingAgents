@@ -197,7 +197,7 @@ def test_full_screen_report(monkeypatch, tmp_path):
     monkeypatch.setattr(alpaca, "get_news_by_symbol",
                         lambda symbols, start, end, per: {"AAPL": "Apple news", "MSFT": "Microsoft news"})
     monkeypatch.setattr(strategist_mod, "gather",
-                        lambda ticker, date: {"chain": "CHAIN", "activity": "IV rank 40", "flow": "FLOW"})
+                        lambda ticker, date, *dte: {"chain": "CHAIN", "activity": "IV rank 40", "flow": "FLOW"})
     screener = _ScreenLLM({
         "AAPL": '{"direction": "up", "conviction": 5, "catalyst": "guidance raise", "reason": "Raised guide."}',
         "MSFT": '{"direction": "none", "conviction": 2, "catalyst": "recap", "reason": "Routine."}',
@@ -393,32 +393,76 @@ def test_index_view_weights_calls_and_flags_concentration():
         "bullish", "mildly bullish", "neutral", "mildly bearish", "bearish"]
 
 
-def test_levels_ladder_from_bars_overnight_and_chains():
+def _opt(kind, strike, bid, ask, oi=0, gamma=0.0):
+    return {"option_type": kind, "strike": strike, "bid": bid, "ask": ask, "open_interest": oi,
+            "greeks": {"gamma": gamma}}
+
+
+def test_levels_zones_from_bars_chains_max_pain_and_gamma():
     from tradingagents.conviction import levels as lv
 
-    def opt(kind, strike, bid, ask, oi, gamma):
-        return {"option_type": kind, "strike": strike, "bid": bid, "ask": ask, "open_interest": oi,
-                "greeks": {"gamma": gamma}}
+    days = [{"date": "2026-10-12", "high": 778.75, "low": 770, "close": 775},
+            {"date": "2026-10-16", "high": 772, "low": 760.64, "close": 765},
+            {"date": "2026-10-19", "high": 770.46, "low": 765.82, "close": 766.48}]
+    today = [_opt("call", 764, 1.8, 1.9, 1000), _opt("put", 764, 1.8, 1.9, 1000),
+             _opt("call", 775, 0.1, 0.2, 50_000), _opt("put", 751, 0.1, 0.2, 40_000)]
+    friday = [_opt("call", 764, 4.7, 4.8, 100), _opt("put", 764, 4.7, 4.8, 100),
+              _opt("call", 780, 0.5, 0.6, 90_000), _opt("put", 745, 0.5, 0.6, 70_000)]
+    gamma = {750: -5e9, 760: -4e9, 765: -1e9, 770: 6e9, 780: 8e9}
+    got = lv.compute("SPY", "2026-10-20", {"bid": 764.1, "ask": 764.3, "last": 766.48, "prevclose": 766.48},
+                     days, [{"high": 767, "low": 763}], {"2026-10-20": today, "2026-10-23": friday},
+                     vix={"bid": 18.9, "ask": 19.1, "prevclose": 18.45}, max_pain={"2026-10-20": 770, "2026-10-23": 770},
+                     gamma=gamma)
+    rows = {label: price for price, label in got.rows}
 
-    days = [{"date": "2026-10-12", "open": 600, "high": 604, "low": 598, "close": 602},
-            {"date": "2026-10-16", "open": 602, "high": 606, "low": 600, "close": 605},
-            {"date": "2026-10-20", "open": 0, "high": 0, "low": 0, "close": 0}]
-    overnight = [{"time": "2026-10-20T08:00:00", "timestamp": 2_000_000_000, "high": 607, "low": 604, "close": 606}]
-    today = [opt("call", 606, 2.0, 2.2, 1000, 0.05), opt("put", 606, 1.8, 2.0, 500, 0.05)]
-    friday = [opt("call", 606, 4.9, 5.1, 100, 0.03), opt("put", 606, 4.9, 5.1, 100, 0.03),
-              opt("call", 615, 0.5, 0.6, 90_000, 0.02), opt("put", 595, 0.5, 0.6, 70_000, 0.02)]
-    got = lv.compute("SPY", "2026-10-20", {"last": 605, "trade_date": 1_000_000_000_000}, days, overnight,
-                     {"2026-10-20": today, "2026-10-23": friday})
-
-    rows = {name: price for price, name, _ in got.rows}
-    assert got.spot == 606 and got.spot_source.startswith("extended hours")
-    assert rows["Prior high"] == 606 and rows["Prior close"] == 605
-    assert rows["Last week's high"] == 606 and rows["Last week's low"] == 598
-    assert rows["Overnight high"] == 607
-    assert rows["Day expected move, high"] == pytest.approx(606 + 4.0)
-    assert rows["Week expected move, low"] == pytest.approx(606 - 10.0)
-    assert rows["Call wall"] == 615 and rows["Put wall"] == 595
-    assert rows["R1 (floor pivot)"] == pytest.approx(2 * (606 + 600 + 605) / 3 - 600)
+    assert got.spot == pytest.approx(764.2) and got.spot_source == "bid/ask mid"
+    assert rows["pivot"] == pytest.approx((770.46 + 765.82 + 766.48) / 3)
+    assert rows["last week's high"] == 778.75 and rows["last week's low"] == 760.64  # the week of Oct 12-16
+    assert rows["top of today's implied range"] == pytest.approx(764.2 + 3.7)
+    assert rows["bottom of week's implied range"] == pytest.approx(764.2 - 9.5)
+    assert rows["today's call wall"] == 775 and rows["week's put wall"] == 745
+    assert rows["gamma flip"] == 770 and rows["biggest negative gamma"] == 750
     text = lv.render(got)
-    assert text.index("| 615.00 | Call wall") < text.index("| 606.00 | **Now**") < text.index("| 595.00 | Put wall")
-    assert "Net gamma through 2026-10-23" in text
+    assert "| 770.00-772.23 | R2, prior high, today's max pain, week's max pain, gamma flip |" in text
+    assert text.index("today's call wall") < text.index("**now**") < text.index("week's put wall")
+    assert "VIX 19.00 (+3.0%)." in text and "below the flip, in negative gamma" in text
+
+
+def test_reaction_classifies_gap_against_the_news():
+    from tradingagents.conviction import reaction
+
+    assert reaction.classify("up", 0.018) == "agree"
+    assert reaction.classify("up", -0.039) == "disagree"
+    assert reaction.classify("down", 0.091) == "disagree"
+    assert reaction.classify("down", -0.001) == "flat"
+    assert reaction.classify("up", None) == "unknown"
+    assert reaction.Reaction(gap=0.09, spread=0.03).unreliable
+
+
+def test_day_mode_ranks_agreeing_names_first_and_asks_for_short_expiries(monkeypatch, tmp_path):
+    from tradingagents.conviction import reaction
+
+    monkeypatch.setattr(alpaca, "get_news_by_symbol", lambda symbols, start, end, per: {t: f"{t} news" for t in symbols})
+    seen = {}
+    monkeypatch.setattr(strategist_mod, "gather",
+                        lambda ticker, date, lo, hi: seen.update({ticker: (lo, hi)}) or
+                        {"chain": "CHAIN", "activity": "", "flow": ""})
+    gaps = {"GE": -0.039, "RTX": 0.018}
+    monkeypatch.setattr(reaction, "check", lambda v, date: reaction.Reaction(gaps[v.ticker], 0.001, 0.05,
+                                                                              reaction.classify(v.direction, gaps[v.ticker])))
+    screener = _ScreenLLM({
+        "GE": '{"direction": "up", "conviction": 5, "catalyst": "Fresh: beat and raise", "reason": "r"}',
+        "RTX": '{"direction": "up", "conviction": 4, "catalyst": "Fresh: beat and raise", "reason": "r"}',
+    })
+    strategist = _StrategistLLM(_idea())
+    config = {**default_config.DEFAULT_CONFIG, "screen_mode": "day", "screen_max_names": 1}
+
+    result = workflow.run_conviction_screen(config, "2026-10-12", tickers=["GE", "RTX"], llms=(screener, strategist))
+    text = workflow.render_report(result)
+
+    assert result.start == "2026-10-09"  # two weekdays back from Monday
+    assert [v.ticker for v in result.shortlist] == ["RTX"]  # agrees with its gap, so it beats GE's 5/5
+    assert seen == {"RTX": (0, 7)} and "one- to five-day moves" in strategist.prompts[0]
+    assert "# custom list pre-market day-trade screen" in text
+    assert "| GE | up 5 | -3.9% | ±5.0% | disagree | Fresh: beat and raise |" in text
+    assert workflow.save_report(result, text, str(tmp_path)).name.endswith("_day.md")
