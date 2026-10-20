@@ -390,6 +390,7 @@ tradingagents screen SPY --screen-only        # the news screen alone
 tradingagents screen SPY --direction down     # bearish names only, traded with puts
 tradingagents screen SPY --batch              # half-price screen via Anthropic's Batches API, for pre-market runs
 tradingagents screen --tickers LITE,NVDA      # a hand-picked list instead of an ETF
+tradingagents levels SPY                      # today's levels: prior session, pivots, overnight range, expected moves, option walls
 ```
 
 For an ETF, the report opens with a view of the whole index: each name's news call weighted by its weight in the ETF, with the tilt by sector, the names driving it, and the biggest holdings that got no call. The headline counts conviction 4-5 calls only, and its bullish and bearish cut-offs are provisional until they are checked against how the index moved afterwards.

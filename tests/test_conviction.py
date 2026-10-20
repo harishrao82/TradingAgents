@@ -391,3 +391,34 @@ def test_index_view_weights_calls_and_flags_concentration():
     assert "| JPM | 1.32% | down 4 | -1.06 | JPM news |" in text
     assert [index_view.label(t) for t in (4, 2, 0, -2, -5)] == [
         "bullish", "mildly bullish", "neutral", "mildly bearish", "bearish"]
+
+
+def test_levels_ladder_from_bars_overnight_and_chains():
+    from tradingagents.conviction import levels as lv
+
+    def opt(kind, strike, bid, ask, oi, gamma):
+        return {"option_type": kind, "strike": strike, "bid": bid, "ask": ask, "open_interest": oi,
+                "greeks": {"gamma": gamma}}
+
+    days = [{"date": "2026-10-12", "open": 600, "high": 604, "low": 598, "close": 602},
+            {"date": "2026-10-16", "open": 602, "high": 606, "low": 600, "close": 605},
+            {"date": "2026-10-20", "open": 0, "high": 0, "low": 0, "close": 0}]
+    overnight = [{"time": "2026-10-20T08:00:00", "timestamp": 2_000_000_000, "high": 607, "low": 604, "close": 606}]
+    today = [opt("call", 606, 2.0, 2.2, 1000, 0.05), opt("put", 606, 1.8, 2.0, 500, 0.05)]
+    friday = [opt("call", 606, 4.9, 5.1, 100, 0.03), opt("put", 606, 4.9, 5.1, 100, 0.03),
+              opt("call", 615, 0.5, 0.6, 90_000, 0.02), opt("put", 595, 0.5, 0.6, 70_000, 0.02)]
+    got = lv.compute("SPY", "2026-10-20", {"last": 605, "trade_date": 1_000_000_000_000}, days, overnight,
+                     {"2026-10-20": today, "2026-10-23": friday})
+
+    rows = {name: price for price, name, _ in got.rows}
+    assert got.spot == 606 and got.spot_source.startswith("extended hours")
+    assert rows["Prior high"] == 606 and rows["Prior close"] == 605
+    assert rows["Last week's high"] == 606 and rows["Last week's low"] == 598
+    assert rows["Overnight high"] == 607
+    assert rows["Day expected move, high"] == pytest.approx(606 + 4.0)
+    assert rows["Week expected move, low"] == pytest.approx(606 - 10.0)
+    assert rows["Call wall"] == 615 and rows["Put wall"] == 595
+    assert rows["R1 (floor pivot)"] == pytest.approx(2 * (606 + 600 + 605) / 3 - 600)
+    text = lv.render(got)
+    assert text.index("| 615.00 | Call wall") < text.index("| 606.00 | **Now**") < text.index("| 595.00 | Put wall")
+    assert "Net gamma through 2026-10-23" in text
