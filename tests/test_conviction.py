@@ -546,9 +546,8 @@ def test_replay_scores_the_short_list_with_news_before_the_open(monkeypatch):
         "GE": {"2026-10-08": {"close": 98}, "2026-10-09": {"open": 100, "close": 103},
                "2026-10-12": {"close": 95}, "2026-10-13": {"close": 101}, "2026-10-14": {"close": 104},
                "2026-10-15": {"close": 110}},
-        "BAC": {"2026-10-09": {"open": 50, "close": 51}},
+        "BAC": {"2026-10-08": {"close": 50}, "2026-10-09": {"open": 50, "close": 51}},
     }
-    monkeypatch.setattr(replay, "_prior_close", lambda ticker, date: {"GE": 98, "BAC": 50}[ticker])
     screener = _ScreenLLM({
         "GE": '{"direction": "up", "conviction": 5, "catalyst": "Fresh: beat", "reason": "r"}',
         "BAC": '{"direction": "down", "conviction": 4, "catalyst": "fine", "reason": "r"}',
@@ -571,3 +570,15 @@ def test_replay_scores_the_short_list_with_news_before_the_open(monkeypatch):
     assert not bac.picked and bac.status == "disagree" and bac.returns["day"] == pytest.approx(-0.02)
     assert "| Short list (what day mode would trade) | 1 | +3.0% (1/1 right) |" in text
     assert "| BAC | down 4 | +1.0% | disagree | no | -2.0% | ? | ? | fine |" in text
+
+
+def test_replay_uses_the_opening_gap_when_there_is_no_pre_market_bar(monkeypatch):
+    from tradingagents.conviction import replay
+
+    bars = {"GE": {"2026-10-08": {"close": 100}, "2026-10-09": {"open": 96, "close": 97}}}
+    gap, source = replay._gap("GE", "2026-10-09", bars.get, lambda ticker, date: None)
+    assert gap == pytest.approx(-0.04) and source == "open"
+
+    monkeypatch.setattr(replay, "TIMESALES_DAYS", 0)  # too old for 5-minute bars: never asked for
+    gap, source = replay._gap("GE", "2026-10-09", bars.get, lambda ticker, date: 1 / 0)
+    assert source == "open"
