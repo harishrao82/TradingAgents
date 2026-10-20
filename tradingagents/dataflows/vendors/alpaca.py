@@ -13,6 +13,7 @@ import html
 import logging
 import os
 import re
+import time
 from datetime import UTC, datetime, timedelta
 
 import requests
@@ -30,6 +31,10 @@ NEWS_URL = "https://data.alpaca.markets/v1beta1/news"
 REQUEST_TIMEOUT = 30
 PAGE_SIZE = 50  # Alpaca's maximum per page
 MAX_PAGES = 4
+RETRIES = 5          # a 429 or 5xx is retried, waiting for the rate-limit reset or doubling from 2s
+MAX_WAIT = 60
+_sleep = time.sleep
+_now = time.time
 # A universe screen asks for many symbols at once: this many per request, and
 # up to BULK_MAX_PAGES pages for each batch.
 BULK_BATCH = 50
@@ -63,25 +68,49 @@ def _keys() -> tuple[str, str]:
     return key, secret
 
 
+def _wait(response, attempt: int) -> float:
+    """Seconds until Alpaca's rate-limit window resets (X-RateLimit-Reset is a Unix time), else Retry-After,
+    else a doubling backoff."""
+    headers = response.headers or {}
+    try:
+        return min(max(float(headers["X-RateLimit-Reset"]) - _now(), 0) + 1, MAX_WAIT)
+    except (KeyError, TypeError, ValueError):
+        pass
+    try:
+        return min(float(headers["Retry-After"]), MAX_WAIT)
+    except (KeyError, TypeError, ValueError):
+        return min(2 ** (attempt + 1), MAX_WAIT)
+
+
 def _request(params: dict) -> dict:
     key, secret = _keys()
-    try:
-        response = requests.get(
-            NEWS_URL,
-            params=params,
-            headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret, "Accept": "application/json"},
-            timeout=REQUEST_TIMEOUT,
-        )
-    except requests.RequestException as exc:
-        raise VendorUnavailableError(f"Alpaca news request failed: {exc}") from None
-    if response.status_code in (401, 403):
-        raise AlpacaNotConfiguredError(
-            f"Alpaca rejected the key pair ({response.status_code}). Check ALPACA_API_KEY and ALPACA_SECRET_KEY."
-        )
-    if response.status_code == 429 or response.status_code >= 500:
-        raise VendorUnavailableError(f"Alpaca news returned {response.status_code}.")
-    response.raise_for_status()
-    return response.json() or {}
+    for attempt in range(RETRIES + 1):
+        try:
+            response = requests.get(
+                NEWS_URL,
+                params=params,
+                headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret, "Accept": "application/json"},
+                timeout=REQUEST_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            if attempt < RETRIES:
+                _sleep(min(2 ** (attempt + 1), MAX_WAIT))
+                continue
+            raise VendorUnavailableError(f"Alpaca news request failed: {exc}") from None
+        if response.status_code in (401, 403):
+            raise AlpacaNotConfiguredError(
+                f"Alpaca rejected the key pair ({response.status_code}). Check ALPACA_API_KEY and ALPACA_SECRET_KEY."
+            )
+        if response.status_code == 429 or response.status_code >= 500:
+            # The news API allows about 200 calls a minute; a bulk read or a replay of
+            # several mornings at once can pass that, so wait for the window to reset.
+            if attempt < RETRIES:
+                _sleep(_wait(response, attempt))
+                continue
+            raise VendorUnavailableError(f"Alpaca news returned {response.status_code}.")
+        response.raise_for_status()
+        return response.json() or {}
+    raise AssertionError("unreachable")
 
 
 def _fetch(start: datetime, end: datetime, symbols: str | None, limit: int | None,

@@ -41,6 +41,7 @@ def _stub(pages, status=200):
         calls.append(dict(params or {}))
         response = mock.Mock(spec=requests.Response)
         response.status_code = status
+        response.headers = {}
         response.raise_for_status.return_value = None
         response.json.return_value = pages[len(calls) - 1] if pages else {}
         return response
@@ -158,11 +159,14 @@ def test_missing_keys_is_not_configured(monkeypatch):
 @pytest.mark.parametrize("status, error", [(401, VendorNotConfiguredError), (429, VendorUnavailableError),
                                            (503, VendorUnavailableError)])
 def test_http_errors_map_to_vendor_errors(monkeypatch, status, error):
-    get, _ = _stub([], status=status)
+    get, calls = _stub([], status=status)
     monkeypatch.setattr(alpaca.requests, "get", get)
+    monkeypatch.setattr(alpaca, "_sleep", lambda seconds: None)
 
     with pytest.raises(error):
         alpaca.get_news("AAPL", "2026-10-10", "2026-10-12")
+    # Throttling and server errors are retried before giving up; a rejected key is not.
+    assert len(calls) == (1 if status == 401 else alpaca.RETRIES + 1)
 
 
 def test_global_news_uses_index_etfs(monkeypatch):
@@ -180,6 +184,7 @@ def test_global_news_uses_index_etfs(monkeypatch):
 def test_router_falls_back_to_yahoo(monkeypatch, status):
     get, _ = _stub([], status=status)
     monkeypatch.setattr(alpaca.requests, "get", get)
+    monkeypatch.setattr(alpaca, "_sleep", lambda seconds: None)
     monkeypatch.setitem(router.VENDOR_METHODS["get_news"], "yfinance", lambda *a, **k: "yahoo news")
 
     assert router.route_to_vendor("get_news", "AAPL", "2026-10-10", "2026-10-12") == "yahoo news"
