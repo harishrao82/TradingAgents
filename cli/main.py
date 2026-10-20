@@ -204,6 +204,22 @@ def screen(
 
 
 @app.command()
+def levels(
+    ticker: str = typer.Argument("SPY", help="Ticker to read levels for"),
+):
+    """Today's levels: prior session, pivots, overnight range, expected moves and option walls. Places no orders."""
+    from datetime import date as _date
+
+    from tradingagents.conviction.levels import get_levels
+
+    try:
+        console.print(get_levels(ticker.upper(), _date.today().isoformat()))
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+
+
+@app.command()
 def tilt(
     momentum: str = typer.Option(..., "--momentum", help="Comma-separated momentum names, as the rebalance picked them"),
     pullback: str = typer.Option("", "--pullback", help="Comma-separated pullback names"),

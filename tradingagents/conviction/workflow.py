@@ -20,6 +20,7 @@ from pathlib import Path
 import anthropic
 
 from tradingagents.dataflows.config import run_config
+from tradingagents.dataflows.date_window import is_historical
 from tradingagents.dataflows.vendors import alpaca, unusual_whales
 from tradingagents.llm_clients.factory import (
     build_llm_kwargs,
@@ -29,6 +30,7 @@ from tradingagents.llm_clients.factory import (
 
 from .batch import screen_news_batch
 from .index_view import render_index_view
+from .levels import get_levels
 from .screen import NewsVerdict, screen_news, shortlist
 from .strategist import OptionsIdea, contracts_for, max_gain, suggest
 
@@ -56,6 +58,7 @@ class ScreenResult:
     screen_model: str = ""
     holdings: dict[str, tuple[float | None, str | None]] = field(default_factory=dict)
     news_names: list[str] = field(default_factory=list)
+    levels: str = ""
 
 
 def screen_llm(config: dict):
@@ -114,6 +117,12 @@ def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> Scr
     result = ScreenResult(etf=etf if not tickers else "custom list", date=date, start=start, universe=len(weights),
                           with_news=len(news), verdicts=verdicts, failures=failures, shortlist=picked,
                           screen_model=config["screen_llm"], holdings=holdings, news_names=list(news))
+    if not tickers and not is_historical(date):
+        try:
+            result.levels = get_levels(etf, date)
+        except Exception as exc:  # levels add to the report; their absence shouldn't stop it
+            logger.warning("No levels for %s: %s", etf, exc)
+            result.levels = f"## {etf} levels\n\nUnavailable: {exc}\n"
     if screen_only or not picked:
         return result
 
@@ -170,6 +179,8 @@ def render_report(result: ScreenResult, equity: float | None = None, risk: float
     view = render_index_view(result.etf, result.verdicts, result.failures, result.holdings, set(result.news_names))
     if view:
         lines.append(view)
+    if result.levels:
+        lines.append(result.levels)
     lines += [_render_idea(item, equity, risk) for item in result.ideas]
     if result.shortlist and not result.ideas:
         lines.append("Short list: " + ", ".join(f"{v.ticker} ({v.direction} {v.conviction})" for v in result.shortlist) + "\n")
