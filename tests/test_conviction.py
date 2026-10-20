@@ -171,6 +171,27 @@ def test_contracts_fit_the_per_trade_risk():
     assert contracts_for(_idea(250.0), None, 0.03) is None
     assert contracts_for(_idea(trade=False), 100_000, 0.03) is None
     assert contracts_for(_idea(5_000.0), 100_000, 0.03) == 0
+    assert contracts_for(_idea(46.0), 200_000, 0.03, max_contracts=40) == 40  # not 130 one-dollar spreads
+
+
+def test_total_risk_cap_cuts_the_ideas_that_come_last():
+    ideas = [workflow.Idea(_verdict(t, "up", c), _idea(200.0), 30) for t, c in (("A", 4), ("B", 5), ("C", 4))]
+
+    workflow.cap_total_risk(ideas, 15_000, lambda item: -item.verdict.conviction)
+
+    # B is strongest and keeps its $6,000; A comes next and keeps $6,000; C gets the $3,000 left.
+    assert [item.contracts for item in ideas] == [30, 30, 15]
+    assert ideas[2].sized_down.startswith("cut from 30") and not ideas[0].sized_down
+
+
+def test_market_open_only_after_half_past_nine_new_york_time_today():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    ny = ZoneInfo("America/New_York")
+    assert workflow._market_open("2026-10-20", datetime(2026, 10, 20, 9, 50, tzinfo=ny))
+    assert not workflow._market_open("2026-10-20", datetime(2026, 10, 20, 9, 10, tzinfo=ny))
+    assert not workflow._market_open("2026-10-19", datetime(2026, 10, 20, 9, 50, tzinfo=ny))
 
 
 class _StrategistLLM:
@@ -216,6 +237,8 @@ def test_full_screen_report(monkeypatch, tmp_path):
     assert "bull call spread, 2.50 debit" in text
     assert "| buy | 1 | call | 100 | 2026-11-20 |" in text
     assert "12 unit(s)" in text
+    assert "at most 40 units, so choose strikes whose max loss is at least $75 a unit" in strategist.prompts[0]
+    assert "**Total at risk:** $3,000 across 1 idea(s), 3.0% of $100,000." in text
     assert "no orders were placed" in text
     assert "## SPY view: bullish (+7.00)" in text
     assert "MSFT 6.0% (news points neither way)" in text and "XOM 1.0% (no news)" in text
@@ -469,6 +492,11 @@ def test_day_mode_ranks_agreeing_names_first_and_asks_for_short_expiries(monkeyp
     assert seen == {"RTX": (0, 7)} and "one- to five-day moves" in strategist.prompts[0]
     assert "# custom list pre-market day-trade screen" in text
     assert "| GE | up 5 | -3.9% | ±5.0% | disagree | Fresh: beat and raise |" in text
+    assert result.skipped == ["GE"] and "No idea for names moving against their news: GE." in text
+    result.market_open = True
+    after_open = workflow.render_report(result)
+    assert "## News against the move since the prior close" in after_open and "| Since close |" in after_open
+    assert "Run after the open" in after_open
     assert workflow.save_report(result, text, str(tmp_path)).name.endswith("_day.md")
 
 

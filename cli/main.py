@@ -172,6 +172,9 @@ def screen(
         None, "--direction", help="both (default; up to half the ideas each way), up (calls) or down (puts)"
     ),
     mode: str = typer.Option("swing", "--mode", help="swing (14-60 day trades) or day (1-5 day moves, 0-7 DTE)"),
+    max_total_risk: float = typer.Option(
+        None, "--max-total-risk", help="Cap on the max loss across all ideas, as a share of --equity (default 0.12)"
+    ),
 ):
     """Screen an ETF's holdings for conviction news and suggest an options trade for each. Places no orders."""
     from datetime import date as _date
@@ -185,6 +188,8 @@ def screen(
         config["screen_max_names"] = max_names
     if batch:
         config["screen_batch"] = True
+    if max_total_risk is not None:
+        config["max_total_risk"] = max_total_risk
     if mode.lower() not in ("swing", "day"):
         console.print("[red]--mode must be swing or day[/red]")
         raise typer.Exit(code=1)
@@ -202,7 +207,7 @@ def screen(
     except Exception as exc:  # a missing key or an unreachable vendor is a setup error
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from None
-    text = render_report(result, equity, config["risk_per_trade"])
+    text = render_report(result, equity, config["risk_per_trade"], config["max_total_risk"])
     path = save_report(result, text, config["results_dir"])
     console.print(text)
     console.print(f"Saved: {path}")
@@ -214,10 +219,13 @@ def premarket(
     equity: float = typer.Option(None, "--equity", help="Account size, to size each idea to the per-trade risk"),
     batch: bool = typer.Option(False, "--batch", help="Screen through Anthropic's Batches API"),
     screen_only: bool = typer.Option(False, "--screen-only", help="Stop after the news and pre-market check"),
+    max_total_risk: float = typer.Option(
+        None, "--max-total-risk", help="Cap on the max loss across all ideas, as a share of --equity (default 0.12)"
+    ),
 ):
     """Pre-market day-trade screen: fresh news, the pre-market reaction, levels and 0-7 day ideas. Places no orders."""
     screen(etf=etf, date=None, tickers=None, equity=equity, screen_only=screen_only, batch=batch,
-           min_conviction=None, max_names=None, direction=None, mode="day")
+           min_conviction=None, max_names=None, direction=None, mode="day", max_total_risk=max_total_risk)
 
 
 @app.command()

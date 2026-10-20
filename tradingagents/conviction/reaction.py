@@ -89,14 +89,17 @@ def tradable(reaction: Reaction, last_expiry: str) -> bool:
     return reaction.nearest_expiry is None or reaction.nearest_expiry <= last_expiry
 
 
-def render(verdicts: list[NewsVerdict], reactions: dict[str, Reaction], horizon: str | None = None) -> str:
+def render(verdicts: list[NewsVerdict], reactions: dict[str, Reaction], horizon: str | None = None,
+           market_open: bool = False) -> str:
     by_ticker = {v.ticker: v for v in verdicts}
     order = sorted(reactions, key=lambda t: (RANK[reactions[t].status], -by_ticker[t].conviction, t))
-    lines = ["## News against the pre-market move", "",
-             "Agree: the gap goes the news's way. Disagree: the market is reading it the other way; "
-             "wait for the first 15-30 minutes after the open before trusting either. "
-             "Pre-market quotes are thin.", "",
-             "| Ticker | Call | Pre-market | Week implied | Reaction | Catalyst |", "|---|---|---|---|---|---|"]
+    move = "move since the prior close" if market_open else "pre-market move"
+    lines = [f"## News against the {move}", "",
+             "Agree: the move goes the news's way. Disagree: the market is reading it the other way"
+             + ("." if market_open else "; wait for the first 15-30 minutes after the open before trusting "
+                "either. Pre-market quotes are thin."), "",
+             f"| Ticker | Call | {'Since close' if market_open else 'Pre-market'} | Week implied | Reaction | Catalyst |",
+             "|---|---|---|---|---|---|"]
     for t in order:
         r, v = reactions[t], by_ticker[t]
         status = r.status + (" (wide quote)" if r.status != "unknown" and r.unreliable else "")

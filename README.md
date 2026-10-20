@@ -386,6 +386,7 @@ Each cell is scored on realized alpha against the instrument's regional benchmar
 
 ```bash
 tradingagents screen SPY --equity 200000      # size each idea to 3% of equity
+tradingagents screen SPY --equity 200000 --max-total-risk 0.10  # cap all ideas together at 10% (default 12%)
 tradingagents screen SPY --screen-only        # the news screen alone
 tradingagents screen SPY --direction down     # bearish names only, traded with puts
 tradingagents screen SPY --batch              # half-price screen via Anthropic's Batches API, for pre-market runs
@@ -396,7 +397,9 @@ tradingagents premarket SPY --batch            # day-trade mode: fresh news vs t
 
 For an ETF, the report opens with a view of the whole index: each name's news call weighted by its weight in the ETF, with the tilt by sector, the names driving it, and the biggest holdings that got no call. The headline counts conviction 4-5 calls only, and its bullish and bearish cut-offs are provisional until they are checked against how the index moved afterwards.
 
-The day-trade mode (`tradingagents premarket`, or `screen --mode day`) reads two weekdays of news for a one- to five-day move, checks each strong call against the pre-market move (bid/ask mid against the prior close), ranks names whose gap agrees with their news first, and asks for trades on 0-7 day expiries. Its report opens with the ETF's levels, merged into price zones.
+The day-trade mode (`tradingagents premarket`, or `screen --mode day`) reads two weekdays of news for a one- to five-day move, checks each strong call against the pre-market move (bid/ask mid against the prior close), ranks names whose gap agrees with their news first, skips names moving against their news (`day_skip_disagree`), and asks for trades on 0-7 day expiries. Run after 9:30 ET, the report says so and the move is since the prior close. Its report opens with the ETF's levels, merged into price zones.
+
+With `--equity`, each idea is sized to `risk_per_trade` (3%) but never past `max_contracts` (40); the strategist is told how wide a structure must be to use the budget at that count. The ideas together are held to `max_total_risk` (12%): names the market agrees with and the strongest calls keep their size first, and the rest are cut.
 
 The report is saved under `results_dir/screens/`. It needs `UNUSUAL_WHALES_API_KEY`, the Alpaca key pair, `ANTHROPIC_API_KEY` (or `OPENROUTER_API_KEY` for an OpenRouter screener) and `TRADIER_ACCESS_TOKEN`. It is analysis only and places no orders.
 
