@@ -16,9 +16,10 @@ from tradingagents.dataflows.errors import NoMarketDataError
 from tradingagents.dataflows.vendors import alpaca, unusual_whales
 
 
-def _response(body, status=200):
+def _response(body, status=200, headers=None):
     response = mock.Mock(spec=requests.Response)
     response.status_code = status
+    response.headers = headers or {}
     response.raise_for_status.return_value = None
     response.json.return_value = body
     return response
@@ -582,3 +583,38 @@ def test_replay_uses_the_opening_gap_when_there_is_no_pre_market_bar(monkeypatch
     monkeypatch.setattr(replay, "TIMESALES_DAYS", 0)  # too old for 5-minute bars: never asked for
     gap, source = replay._gap("GE", "2026-10-09", bars.get, lambda ticker, date: 1 / 0)
     assert source == "open"
+
+
+def test_alpaca_news_waits_out_a_rate_limit(monkeypatch):
+    monkeypatch.setenv("ALPACA_API_KEY", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+    monkeypatch.setattr(alpaca, "_now", lambda: 1_000.0)
+    pauses, replies = [], [_response({}, status=429, headers={"X-RateLimit-Reset": "1012"}),
+                           _response({}, status=429, headers={"Retry-After": "7"}), _response({}, status=503),
+                           _response({"news": [_article(1, "Apple recalls chargers", ["AAPL"])]})]
+    monkeypatch.setattr(alpaca, "_sleep", pauses.append)
+    monkeypatch.setattr(alpaca.requests, "get", lambda *a, **k: replies.pop(0))
+
+    news = alpaca.get_news_by_symbol(["AAPL"], "2026-10-10", "2026-10-12", per_symbol=5)
+
+    assert pauses == [13.0, 7.0, 8] and "Apple recalls chargers" in news["AAPL"]
+
+
+def test_replay_leaves_out_a_morning_that_fails(monkeypatch):
+    from tradingagents.conviction import replay
+
+    monkeypatch.setattr(unusual_whales, "get_etf_constituents", lambda etf: [("GE", 1.0, "Industrials")])
+
+    def news(symbols, start, end, per, **kw):
+        if end == "2026-10-08":
+            raise RuntimeError("Alpaca news returned 429.")
+        return {}
+
+    monkeypatch.setattr(alpaca, "get_news_by_symbol", news)
+    config = {**default_config.DEFAULT_CONFIG, "screen_mode": "day"}
+
+    result = replay.run_replay(config, ["2026-10-08", "2026-10-09"], llms=(_ScreenLLM({}),),
+                               bars=lambda ticker: {"2026-10-08": {}, "2026-10-09": {}})
+
+    assert result.skipped == ["2026-10-08"] and result.dates == ["2026-10-09"]
+    assert "Mornings that failed and are left out: 2026-10-08." in replay.render_replay(result)

@@ -62,6 +62,7 @@ class ReplayResult:
     dates: list[str]
     picks: list[Pick]
     failures: dict[str, int]     # names the screen couldn't read, by date
+    skipped: list[str] = field(default_factory=list)   # mornings that failed outright
 
 
 def trading_days(end: str, count: int) -> list[str]:
@@ -179,7 +180,12 @@ def run_replay(config: dict, dates: list[str], etf: str = "SPY", llms: tuple | N
         screener = (llms or (None,))[0]
 
         def one(date):
-            found = replay_day(config, date, weights, screener, gaps, daily)
+            try:
+                found = replay_day(config, date, weights, screener, gaps, daily)
+            except Exception as exc:  # one morning's outage shouldn't lose the other mornings' work
+                logger.warning("Replay of %s failed: %s", date, exc)
+                say(f"{date}: skipped ({exc})")
+                return date, ([], -1)
             say(f"{date}: {len(found[0])} strong calls, {sum(p.picked for p in found[0])} on the short list")
             return date, found
 
@@ -191,7 +197,9 @@ def run_replay(config: dict, dates: list[str], etf: str = "SPY", llms: tuple | N
         calendar = sorted(d for d in daily("SPY") if d < today)  # today's bar is still moving
         for p in picks:
             p.returns = outcome(p.verdict.direction, daily(p.verdict.ticker), calendar, p.date)
-    return ReplayResult(etf, dates, picks, {d: days[d][1] for d in dates if days[d][1]})
+    skipped = [d for d in dates if days[d][1] == -1]
+    return ReplayResult(etf, [d for d in dates if d not in skipped], picks,
+                        {d: days[d][1] for d in dates if days[d][1] > 0}, skipped)
 
 
 def _pct(value: float | None) -> str:
@@ -207,6 +215,8 @@ def _row(name: str, picks: list[Pick]) -> str:
 
 
 def render_replay(result: ReplayResult) -> str:
+    if not result.dates:
+        return f"# {result.etf} day-screen replay\n\nEvery morning failed: {', '.join(result.skipped)}.\n"
     picks = result.picks
     groups = [
         ("Short list (what day mode would trade)", [p for p in picks if p.picked]),
@@ -226,6 +236,8 @@ def render_replay(result: ReplayResult) -> str:
     if opened:
         lines += [f"{opened} of {len(picks)} calls had no pre-market bar (older than {TIMESALES_DAYS} days, or no "
                   "pre-market trade), so their move is the opening gap.", ""]
+    if result.skipped:
+        lines += [f"Mornings that failed and are left out: {', '.join(result.skipped)}.", ""]
     if result.failures:
         lines += ["Names the screen couldn't read: " + ", ".join(f"{d} {n}" for d, n in result.failures.items()), ""]
     for date in result.dates:
