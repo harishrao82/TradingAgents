@@ -229,6 +229,33 @@ def premarket(
 
 
 @app.command()
+def replay(
+    etf: str = typer.Argument("SPY", help="ETF whose holdings (from Unusual Whales) make the universe"),
+    days: int = typer.Option(10, "--days", help="How many past sessions to replay, ending yesterday"),
+    batch: bool = typer.Option(False, "--batch", help="Screen through Anthropic's Batches API: half price, slower"),
+):
+    """Replay the pre-market day screen on past mornings and score its picks by what each stock did. Places no orders."""
+    from datetime import date as _date
+    from pathlib import Path
+
+    from tradingagents.conviction.replay import render_replay, run_replay, trading_days
+
+    config = {**DEFAULT_CONFIG, "screen_mode": "day", "screen_batch": batch}
+    try:
+        dates = trading_days(_date.today().isoformat(), days)
+        result = run_replay(config, dates, etf=etf.upper(), progress=lambda m: console.print(f"[dim]{m}[/dim]"))
+    except Exception as exc:  # a missing key or an unreachable vendor is a setup error
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    text = render_replay(result)
+    path = Path(config["results_dir"]) / "screens" / f"{etf.upper()}_replay_{dates[0]}_{dates[-1]}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    console.print(text)
+    console.print(f"Saved: {path}")
+
+
+@app.command()
 def levels(
     ticker: str = typer.Argument("SPY", help="Ticker to read levels for"),
 ):
