@@ -24,14 +24,14 @@ def _text(message) -> str:
 
 def screen_news_batch(client, model: str, news_by_ticker: dict[str, str], start: str, end: str,
                       max_tokens: int = 1500, progress=None, sleep=time.sleep,
-                      clock=time.monotonic) -> tuple[list[NewsVerdict], dict[str, str]]:
+                      clock=time.monotonic, template: str = SCREEN_PROMPT) -> tuple[list[NewsVerdict], dict[str, str]]:
     """Screen every name's news in one batch; returns the verdicts and the names that failed, with why."""
     tickers = list(news_by_ticker)
     # Batch ids allow only letters, digits, - and _, so BRK.B travels by position.
     requests = [
         {"custom_id": f"n{i}",
          "params": {"model": model, "max_tokens": max_tokens,
-                    "messages": [{"role": "user", "content": SCREEN_PROMPT.format(
+                    "messages": [{"role": "user", "content": template.format(
                         ticker=ticker, start=start, end=end, news=news_by_ticker[ticker])}]}}
         for i, ticker in enumerate(tickers)
     ]

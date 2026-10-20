@@ -390,10 +390,13 @@ tradingagents screen SPY --screen-only        # the news screen alone
 tradingagents screen SPY --direction down     # bearish names only, traded with puts
 tradingagents screen SPY --batch              # half-price screen via Anthropic's Batches API, for pre-market runs
 tradingagents screen --tickers LITE,NVDA      # a hand-picked list instead of an ETF
-tradingagents levels SPY                      # today's levels: prior session, pivots, overnight range, expected moves, option walls
+tradingagents levels SPY                      # today's levels: pivots, implied ranges, option walls, max pain, gamma flip
+tradingagents premarket SPY --batch            # day-trade mode: fresh news vs the pre-market move, levels, 0-7 day ideas
 ```
 
 For an ETF, the report opens with a view of the whole index: each name's news call weighted by its weight in the ETF, with the tilt by sector, the names driving it, and the biggest holdings that got no call. The headline counts conviction 4-5 calls only, and its bullish and bearish cut-offs are provisional until they are checked against how the index moved afterwards.
+
+The day-trade mode (`tradingagents premarket`, or `screen --mode day`) reads two weekdays of news for a one- to five-day move, checks each strong call against the pre-market move (bid/ask mid against the prior close), ranks names whose gap agrees with their news first, and asks for trades on 0-7 day expiries. Its report opens with the ETF's levels, merged into price zones.
 
 The report is saved under `results_dir/screens/`. It needs `UNUSUAL_WHALES_API_KEY`, the Alpaca key pair, `ANTHROPIC_API_KEY` (or `OPENROUTER_API_KEY` for an OpenRouter screener) and `TRADIER_ACCESS_TOKEN`. It is analysis only and places no orders.
 

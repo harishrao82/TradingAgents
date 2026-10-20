@@ -501,3 +501,24 @@ def get_etf_constituents(etf: str) -> list[tuple[str, float | None, str | None]]
 def get_etf_holdings(etf: str) -> list[tuple[str, float | None]]:
     """The ETF's stock holdings as ``(ticker, weight %)``, heaviest first."""
     return [(ticker, weight) for ticker, weight, _ in get_etf_constituents(etf)]
+
+
+def get_max_pain(symbol: str) -> dict[str, float]:
+    """Max pain by expiry, as ``{yyyy-mm-dd: price}``."""
+    pains = {}
+    for row in _request(f"stock/{symbol.upper()}/max-pain"):
+        expiry, price = _day(row.get("expiry")), _num(row.get("max_pain"))
+        if expiry and price:
+            pains[expiry] = price
+    return pains
+
+
+def get_gamma_by_strike(symbol: str) -> dict[float, float]:
+    """Net open-interest gamma by strike (calls plus puts, puts already negative), from spot exposures."""
+    gamma = {}
+    for row in _request(f"stock/{symbol.upper()}/spot-exposures/strike"):
+        strike = _num(row.get("strike"))
+        if strike is None:
+            continue
+        gamma[strike] = (_num(row.get("call_gamma_oi")) or 0) + (_num(row.get("put_gamma_oi")) or 0)
+    return gamma
