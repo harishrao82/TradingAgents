@@ -514,3 +514,45 @@ def test_unusual_whales_retries_a_dropped_connection_once(monkeypatch):
     monkeypatch.setattr(unusual_whales.requests, "get", get)
 
     assert unusual_whales.get_max_pain("SPY") == {"2026-10-23": 770.0} and len(calls) == 2
+
+
+def test_replay_scores_the_short_list_with_news_before_the_open(monkeypatch):
+    from tradingagents.conviction import replay
+
+    monkeypatch.setattr(unusual_whales, "get_etf_constituents",
+                        lambda etf: [("GE", 1.0, "Industrials"), ("BAC", 1.2, "Financials"), ("XOM", 0.9, "Energy")])
+    cutoffs = []
+    monkeypatch.setattr(alpaca, "get_news_by_symbol",
+                        lambda symbols, start, end, per, cutoff=None: cutoffs.append(cutoff) or
+                        {t: f"{t} news" for t in symbols})
+    calendar = ["2026-10-08", "2026-10-09", "2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15"]
+    bars = {
+        "SPY": {d: {"open": 1, "close": 1} for d in calendar},
+        # GE opens 100 on the 9th, closes 103 that day and 95 two days in.
+        "GE": {"2026-10-08": {"close": 98}, "2026-10-09": {"open": 100, "close": 103},
+               "2026-10-12": {"close": 95}, "2026-10-13": {"close": 101}, "2026-10-14": {"close": 104},
+               "2026-10-15": {"close": 110}},
+        "BAC": {"2026-10-09": {"open": 50, "close": 51}},
+    }
+    monkeypatch.setattr(replay, "_prior_close", lambda ticker, date: {"GE": 98, "BAC": 50}[ticker])
+    screener = _ScreenLLM({
+        "GE": '{"direction": "up", "conviction": 5, "catalyst": "Fresh: beat", "reason": "r"}',
+        "BAC": '{"direction": "down", "conviction": 4, "catalyst": "fine", "reason": "r"}',
+        "XOM": '{"direction": "none", "conviction": 2, "catalyst": "recap", "reason": "r"}',
+    })
+    config = {**default_config.DEFAULT_CONFIG, "screen_mode": "day"}
+
+    result = replay.run_replay(config, ["2026-10-09"], llms=(screener,),
+                               gaps=lambda ticker, date: {"GE": 100.0, "BAC": 50.5}[ticker],
+                               bars=lambda ticker: bars[ticker])
+    text = replay.render_replay(result)
+
+    assert cutoffs[0].isoformat() == "2026-10-09T09:25:00-04:00"
+    ge, bac = sorted(result.picks, key=lambda p: p.verdict.ticker != "GE")
+    assert ge.picked and ge.status == "agree" and ge.gap == pytest.approx(100 / 98 - 1)
+    assert ge.returns["day"] == pytest.approx(0.03) and ge.returns["2 days"] == pytest.approx(-0.05)
+    assert ge.returns["5 days"] == pytest.approx(0.10)
+    # BAC gapped up against a down call, so the day mode skips it; scored as a down call it lost 2%.
+    assert not bac.picked and bac.status == "disagree" and bac.returns["day"] == pytest.approx(-0.02)
+    assert "| Short list (what day mode would trade) | 1 | +3.0% (1/1 right) |" in text
+    assert "| BAC | down 4 | +1.0% | disagree | no | -2.0% | ? | ? | fine |" in text

@@ -203,14 +203,18 @@ def _window(start_date: str, end_date: str) -> tuple[datetime, datetime]:
     return start, datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC) + timedelta(days=1)
 
 
-def get_news_by_symbol(symbols: list[str], start_date: str, end_date: str, per_symbol: int) -> dict[str, str]:
+def get_news_by_symbol(symbols: list[str], start_date: str, end_date: str, per_symbol: int,
+                       cutoff: datetime | None = None) -> dict[str, str]:
     """Benzinga news for many tickers at once, as each ticker's formatted article list.
 
     Reads the window in batches of ``BULK_BATCH`` symbols, then picks each
     ticker's articles as ``get_news`` does. Tickers with no article in the
-    window are left out.
+    window are left out. ``cutoff`` ends the window earlier than midnight after
+    ``end_date``, so a replayed morning sees only the news out before the open.
     """
     start, end = _window(start_date, end_date)
+    if cutoff:
+        end = min(end, cutoff)
     wanted = list(dict.fromkeys(s.upper() for s in symbols))
     by_symbol: dict[str, dict] = {s: {} for s in wanted}
     # Benzinga files class shares under the root (BRK) and tags them BRK/B, never BRK.B,
