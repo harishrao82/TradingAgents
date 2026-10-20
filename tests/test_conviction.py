@@ -74,6 +74,20 @@ def test_bulk_news_batches_symbols_and_splits_by_ticker(monkeypatch):
     assert "Tagged: MSFT, AAPL" in news["MSFT"]
 
 
+def test_day_news_keeps_only_names_with_an_article_since_the_prior_close(monkeypatch):
+    monkeypatch.setenv("ALPACA_API_KEY", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+    monkeypatch.setattr(alpaca.requests, "get", lambda url, params=None, headers=None, timeout=None: _response({
+        "news": [_article(1, "Exxon output update", ["XOM"], "2026-10-15T12:00:00Z"),
+                 _article(2, "UnitedHealth beats and raises", ["UNH"], "2026-10-13T11:00:00Z")]}))
+
+    news = alpaca.get_news_by_symbol(["UNH", "XOM"], "2026-10-14", "2026-10-15", per_symbol=5,
+                                     fresh_since=workflow.prior_close("2026-10-15"))
+
+    # Tuesday's earnings story is two days old by Thursday morning, so UNH doesn't come back.
+    assert set(news) == {"XOM"}
+
+
 def test_class_shares_are_queried_by_root_and_matched_on_slash_tags(monkeypatch):
     monkeypatch.setenv("ALPACA_API_KEY", "k")
     monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
@@ -216,7 +230,7 @@ def test_full_screen_report(monkeypatch, tmp_path):
     monkeypatch.setattr(unusual_whales, "get_etf_constituents",
                         lambda etf: [("AAPL", 7.0, "Technology"), ("MSFT", 6.0, "Technology"), ("XOM", 1.0, "Energy")])
     monkeypatch.setattr(alpaca, "get_news_by_symbol",
-                        lambda symbols, start, end, per: {"AAPL": "Apple news", "MSFT": "Microsoft news"})
+                        lambda symbols, start, end, per, **kw: {"AAPL": "Apple news", "MSFT": "Microsoft news"})
     monkeypatch.setattr(strategist_mod, "gather",
                         lambda ticker, date, *dte: {"chain": "CHAIN", "activity": "IV rank 40", "flow": "FLOW"})
     screener = _ScreenLLM({
@@ -247,7 +261,7 @@ def test_full_screen_report(monkeypatch, tmp_path):
 
 
 def test_screen_only_skips_the_strategist(monkeypatch):
-    monkeypatch.setattr(alpaca, "get_news_by_symbol", lambda symbols, start, end, per: {"AAPL": "Apple news"})
+    monkeypatch.setattr(alpaca, "get_news_by_symbol", lambda symbols, start, end, per, **kw: {"AAPL": "Apple news"})
     screener = _ScreenLLM({"AAPL": '{"direction": "down", "conviction": 4, "catalyst": "probe", "reason": "r"}'})
     strategist = mock.Mock()
 
@@ -376,7 +390,7 @@ def test_batch_screen_parses_results_and_records_failures():
 
 
 def test_screen_with_batch_option(monkeypatch):
-    monkeypatch.setattr(alpaca, "get_news_by_symbol", lambda symbols, start, end, per: {"PEP": "Pepsi news"})
+    monkeypatch.setattr(alpaca, "get_news_by_symbol", lambda symbols, start, end, per, **kw: {"PEP": "Pepsi news"})
     client = _batch_client({"PEP": ("succeeded", '{"direction": "down", "conviction": 5, "catalyst": "c", '
                                                  '"reason": "r"}', "end_turn")})
     monkeypatch.setattr(workflow.screen_news_batch.__globals__["time"], "sleep", lambda s: None)
@@ -389,7 +403,7 @@ def test_screen_with_batch_option(monkeypatch):
 
 
 def test_batch_needs_an_anthropic_screener(monkeypatch):
-    monkeypatch.setattr(alpaca, "get_news_by_symbol", lambda symbols, start, end, per: {"PEP": "news"})
+    monkeypatch.setattr(alpaca, "get_news_by_symbol", lambda symbols, start, end, per, **kw: {"PEP": "news"})
     config = {**default_config.DEFAULT_CONFIG, "screen_batch": True, "screen_llm_provider": "openrouter"}
 
     with pytest.raises(ValueError, match="Batches API"):
@@ -465,7 +479,7 @@ def test_reaction_classifies_gap_against_the_news():
 def test_day_mode_ranks_agreeing_names_first_and_asks_for_short_expiries(monkeypatch, tmp_path):
     from tradingagents.conviction import reaction
 
-    monkeypatch.setattr(alpaca, "get_news_by_symbol", lambda symbols, start, end, per: {t: f"{t} news" for t in symbols})
+    monkeypatch.setattr(alpaca, "get_news_by_symbol", lambda symbols, start, end, per, **kw: {t: f"{t} news" for t in symbols})
     seen = {}
     monkeypatch.setattr(strategist_mod, "gather",
                         lambda ticker, date, lo, hi: seen.update({ticker: (lo, hi)}) or
@@ -523,7 +537,7 @@ def test_replay_scores_the_short_list_with_news_before_the_open(monkeypatch):
                         lambda etf: [("GE", 1.0, "Industrials"), ("BAC", 1.2, "Financials"), ("XOM", 0.9, "Energy")])
     cutoffs = []
     monkeypatch.setattr(alpaca, "get_news_by_symbol",
-                        lambda symbols, start, end, per, cutoff=None: cutoffs.append(cutoff) or
+                        lambda symbols, start, end, per, cutoff=None, fresh_since=None: cutoffs.append((cutoff, fresh_since)) or
                         {t: f"{t} news" for t in symbols})
     calendar = ["2026-10-08", "2026-10-09", "2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15"]
     bars = {
@@ -547,7 +561,8 @@ def test_replay_scores_the_short_list_with_news_before_the_open(monkeypatch):
                                bars=lambda ticker: bars[ticker])
     text = replay.render_replay(result)
 
-    assert cutoffs[0].isoformat() == "2026-10-09T09:25:00-04:00"
+    assert cutoffs[0][0].isoformat() == "2026-10-09T09:25:00-04:00"
+    assert cutoffs[0][1].isoformat() == "2026-10-08T16:00:00-04:00"
     ge, bac = sorted(result.picks, key=lambda p: p.verdict.ticker != "GE")
     assert ge.picked and ge.status == "agree" and ge.gap == pytest.approx(100 / 98 - 1)
     assert ge.returns["day"] == pytest.approx(0.03) and ge.returns["2 days"] == pytest.approx(-0.05)

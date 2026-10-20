@@ -110,11 +110,12 @@ def _screen(config, news, start, date, screener):
 def replay_day(config: dict, date: str, weights: dict[str, float | None], screener=None,
                gaps=premarket_price) -> tuple[list[Pick], int]:
     """The strong calls for one morning, marked with the ones the day mode would have traded."""
-    from .workflow import _weekdays_back
+    from .workflow import _weekdays_back, prior_close
 
     start = _weekdays_back(date, config["day_lookback_days"])
     news = alpaca.get_news_by_symbol(list(weights), start, date, config["screen_articles_per_name"],
-                                     cutoff=cutoff(date))
+                                     cutoff=cutoff(date),
+                                     fresh_since=prior_close(date) if config["day_fresh_only"] else None)
     verdicts, failures = _screen(config, news, start, date, screener)
     strong = [v for v in verdicts if v.direction != "none" and v.conviction >= config["screen_min_conviction"]]
     status = {}
