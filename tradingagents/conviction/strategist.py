@@ -126,11 +126,23 @@ def max_gain(idea: OptionsIdea) -> float | None:
     return None
 
 
-def contracts_for(idea: OptionsIdea, equity: float | None, risk_per_trade: float) -> int | None:
-    """Units of the structure whose combined max loss fits the per-trade risk budget."""
+def contracts_for(idea: OptionsIdea, equity: float | None, risk_per_trade: float,
+                  max_contracts: int | None = None) -> int | None:
+    """Units of the structure whose combined max loss fits the per-trade risk budget, at most ``max_contracts``."""
     if not equity or not idea.trade or idea.max_loss <= 0:
         return None
-    return math.floor(equity * risk_per_trade / idea.max_loss)
+    units = math.floor(equity * risk_per_trade / idea.max_loss)
+    return min(units, max_contracts) if max_contracts else units
+
+
+def sizing_note(equity: float | None, risk_per_trade: float, max_contracts: int | None) -> str:
+    """Tells the strategist how wide a structure must be to use the budget within the contract cap."""
+    if not equity or not max_contracts:
+        return ""
+    budget = equity * risk_per_trade
+    return (f"Sizing: the risk budget is ${budget:,.0f} a trade with at most {max_contracts} units, so choose strikes "
+            f"whose max loss is at least ${budget / max_contracts:,.0f} a unit. A narrower spread can't use the "
+            "budget, and many contracts of it lose too much to fills and commissions.\n")
 
 
 def suggest(llm, verdict: NewsVerdict, news: str, date: str, data: dict[str, str] | None = None,

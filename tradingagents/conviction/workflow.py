@@ -18,9 +18,11 @@ Analysis only: nothing here reads an account or places an order.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import anthropic
 
@@ -38,7 +40,7 @@ from .index_view import render_index_view
 from .levels import get_levels
 from .reaction import RANK, Reaction, check_all, render as render_reactions, tradable
 from .screen import DAY_SCREEN_PROMPT, SCREEN_PROMPT, NewsVerdict, screen_news, shortlist
-from .strategist import DAY, SWING, OptionsIdea, contracts_for, max_gain, suggest
+from .strategist import DAY, SWING, OptionsIdea, contracts_for, max_gain, sizing_note, suggest
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,7 @@ class Idea:
     verdict: NewsVerdict
     idea: OptionsIdea | str
     contracts: int | None = None
+    sized_down: str = ""    # why it holds fewer units than the per-trade budget allows
 
 
 @dataclass
@@ -68,6 +71,8 @@ class ScreenResult:
     mode: str = "swing"
     reactions: dict[str, Reaction] = field(default_factory=dict)
     last_expiry: str | None = None
+    market_open: bool = False
+    skipped: list[str] = field(default_factory=list)   # day mode: strong calls the market is moving against
 
 
 def screen_llm(config: dict):
@@ -84,6 +89,26 @@ def _weekdays_back(date: str, days: int) -> str:
         while day.weekday() >= 5:
             day -= timedelta(days=1)
     return day.strftime("%Y-%m-%d")
+
+
+def _market_open(date: str, now: datetime | None = None) -> bool:
+    """Whether ``date`` is today in New York and the regular session has started."""
+    now = now or datetime.now(ZoneInfo("America/New_York"))
+    return now.strftime("%Y-%m-%d") == date and (now.hour, now.minute) >= (9, 30)
+
+
+def cap_total_risk(ideas: list[Idea], budget: float, order) -> None:
+    """Cut units from the ideas that come last in ``order`` until their combined max loss fits ``budget``."""
+    left = budget
+    for item in sorted(ideas, key=order):
+        if not item.contracts:
+            continue
+        loss = item.idea.max_loss
+        fit = min(item.contracts, max(0, math.floor(left / loss)))
+        if fit < item.contracts:
+            item.sized_down = f"cut from {item.contracts} to keep the screen's total risk within the cap"
+            item.contracts = fit
+        left -= fit * loss
 
 
 def _days_after(date: str, days: int) -> str:
@@ -135,6 +160,10 @@ def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> Scr
     last_expiry = _days_after(date, config["day_max_dte"]) if day else None
     candidates = [v for v in verdicts if not day or v.ticker not in reactions
                   or tradable(reactions[v.ticker], last_expiry)]
+    skipped = []
+    if day and config["day_skip_disagree"]:
+        skipped = sorted(t for t, r in reactions.items() if r.status == "disagree")
+        candidates = [v for v in candidates if v.ticker not in skipped]
     picked = shortlist(candidates, config["screen_min_conviction"], config["screen_max_names"], weights,
                        config["screen_direction"], rank)
     say(f"{len(picked)} names on the short list: {', '.join(v.ticker for v in picked) or 'none'}")
@@ -142,7 +171,8 @@ def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> Scr
     result = ScreenResult(etf=etf if not tickers else "custom list", date=date, start=start, universe=len(weights),
                           with_news=len(news), verdicts=verdicts, failures=failures, shortlist=picked,
                           screen_model=config["screen_llm"], holdings=holdings, news_names=list(news),
-                          mode=config["screen_mode"], reactions=reactions, last_expiry=last_expiry)
+                          mode=config["screen_mode"], reactions=reactions, last_expiry=last_expiry,
+                          market_open=_market_open(date), skipped=skipped)
     if not tickers and not is_historical(date):
         try:
             result.levels = get_levels(etf, date)
@@ -155,9 +185,9 @@ def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> Scr
     strategist = strategist or create_tier_client(config, "deep").get_llm()
     for verdict in picked:
         say(f"strategist: {verdict.ticker}")
-        note = ""
+        note = sizing_note(equity, config["risk_per_trade"], config["max_contracts"])
         if day and verdict.ticker in reactions and reactions[verdict.ticker].status == "disagree":
-            note = ("This morning's pre-market move goes against the news. The plan must say to wait for the first "
+            note += ("This morning's pre-market move goes against the news. The plan must say to wait for the first "
                     "15-30 minutes after the open and enter only if the price turns the news's way.\n")
         dte = (config["day_min_dte"], config["day_max_dte"]) if day else (14, 60)
         try:
@@ -166,8 +196,16 @@ def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> Scr
         except Exception as exc:
             logger.warning("Strategist failed for %s: %s", verdict.ticker, exc)
             idea = f"The strategist failed: {exc}"
-        contracts = contracts_for(idea, equity, config["risk_per_trade"]) if isinstance(idea, OptionsIdea) else None
-        result.ideas.append(Idea(verdict, idea, contracts))
+        contracts = (contracts_for(idea, equity, config["risk_per_trade"], config["max_contracts"])
+                     if isinstance(idea, OptionsIdea) else None)
+        item = Idea(verdict, idea, contracts)
+        if contracts and contracts == config["max_contracts"] < contracts_for(idea, equity, config["risk_per_trade"]):
+            item.sized_down = f"capped at {contracts} contracts"
+        result.ideas.append(item)
+    if equity and config["max_total_risk"]:
+        # The names the market agrees with keep their size first, then the strongest calls.
+        cap_total_risk(result.ideas, equity * config["max_total_risk"],
+                       lambda item: (rank.get(item.verdict.ticker, 0), -item.verdict.conviction))
     return result
 
 
@@ -189,9 +227,11 @@ def _render_idea(item: Idea, equity: float | None, risk: float) -> str:
     size = ""
     if item.contracts is not None:
         size = (f"\n**Size:** {item.contracts} unit(s) keeps the max loss within {risk:.0%} of "
-                f"${equity:,.0f} (${item.contracts * idea.max_loss:,.0f} at risk).\n")
+                f"${equity:,.0f} (${item.contracts * idea.max_loss:,.0f} at risk)"
+                + (f"; {item.sized_down}" if item.sized_down else "") + ".\n")
         if item.contracts == 0:
-            size += "One unit risks more than the budget, so this idea doesn't fit at this size.\n"
+            size += ("The screen's total risk cap is used up by the ideas ahead of this one.\n" if item.sized_down
+                     else "One unit risks more than the budget, so this idea doesn't fit at this size.\n")
     return (head + f"\n**Trade:** {idea.structure}, {premium} per unit. "
             f"Max loss {_money(idea.max_loss)}, max gain {_money(max_gain(idea))} per unit. "
             f"Breakeven {idea.breakeven}.\n\n| Action | Ratio | Type | Strike | Expiry |\n|---|---|---|---|---|\n"
@@ -199,7 +239,18 @@ def _render_idea(item: Idea, equity: float | None, risk: float) -> str:
             f"**Wrong if:** {idea.invalidation}\n")
 
 
-def render_report(result: ScreenResult, equity: float | None = None, risk: float = 0.03) -> str:
+def _total_risk(ideas: list[Idea], equity: float | None, cap: float | None) -> str:
+    sized = [item for item in ideas if item.contracts]
+    if not equity or not sized:
+        return ""
+    total = sum(item.contracts * item.idea.max_loss for item in sized)
+    limit = f", within the {cap:.0%} cap" if cap else ""
+    return (f"**Total at risk:** ${total:,.0f} across {len(sized)} idea(s), {total / equity:.1%} of "
+            f"${equity:,.0f}{limit}.\n")
+
+
+def render_report(result: ScreenResult, equity: float | None = None, risk: float = 0.03,
+                  total_cap: float | None = None) -> str:
     lines = [
         f"# {result.etf} {'pre-market day-trade' if result.mode == 'day' else 'conviction'} screen, {result.date}",
         "",
@@ -208,11 +259,18 @@ def render_report(result: ScreenResult, equity: float | None = None, risk: float
         f"{len(result.shortlist)} on the short list. Analysis only; no orders were placed.",
         "",
     ]
+    if result.mode == "day" and result.market_open:
+        lines += ["Run after the open: each name's move is since the prior close, not pre-market.", ""]
     view = render_index_view(result.etf, result.verdicts, result.failures, result.holdings, set(result.news_names))
     sections = [result.levels, view] if result.mode == "day" else [view, result.levels]
     lines += [section for section in sections if section]
     if result.reactions:
-        lines.append(render_reactions(result.verdicts, result.reactions, result.last_expiry))
+        lines.append(render_reactions(result.verdicts, result.reactions, result.last_expiry, result.market_open))
+    if result.skipped:
+        lines.append("No idea for names moving against their news: " + ", ".join(result.skipped) + ".\n")
+    total = _total_risk(result.ideas, equity, total_cap)
+    if total:
+        lines.append(total)
     lines += [_render_idea(item, equity, risk) for item in result.ideas]
     if result.shortlist and not result.ideas:
         lines.append("Short list: " + ", ".join(f"{v.ticker} ({v.direction} {v.conviction})" for v in result.shortlist) + "\n")

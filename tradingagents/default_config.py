@@ -179,6 +179,9 @@ def build_default_config() -> dict:
         "day_min_dte": 0,                # expiries for day-mode trades
         "day_max_dte": 7,
         "risk_per_trade": 0.03,          # max loss per idea, as a share of --equity
+        "max_contracts": 40,             # most units of one idea; the strategist widens strikes to fit the budget
+        "max_total_risk": 0.12,          # max loss across all ideas in a screen, as a share of --equity
+        "day_skip_disagree": True,       # day mode: no idea for a name whose move goes against its news
         # Basket tilt (tradingagents tilt): bounds on each name's weight vs equal weight
         "tilt_min_multiplier": 0.5,
         "tilt_max_multiplier": 1.5,
