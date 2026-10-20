@@ -36,7 +36,7 @@ from tradingagents.llm_clients.factory import (
 from .batch import screen_news_batch
 from .index_view import render_index_view
 from .levels import get_levels
-from .reaction import RANK, Reaction, check_all, render as render_reactions
+from .reaction import RANK, Reaction, check_all, render as render_reactions, tradable
 from .screen import DAY_SCREEN_PROMPT, SCREEN_PROMPT, NewsVerdict, screen_news, shortlist
 from .strategist import DAY, SWING, OptionsIdea, contracts_for, max_gain, suggest
 
@@ -67,6 +67,7 @@ class ScreenResult:
     levels: str = ""
     mode: str = "swing"
     reactions: dict[str, Reaction] = field(default_factory=dict)
+    last_expiry: str | None = None
 
 
 def screen_llm(config: dict):
@@ -83,6 +84,10 @@ def _weekdays_back(date: str, days: int) -> str:
         while day.weekday() >= 5:
             day -= timedelta(days=1)
     return day.strftime("%Y-%m-%d")
+
+
+def _days_after(date: str, days: int) -> str:
+    return (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
 
 
 def run_conviction_screen(config: dict, date: str, etf: str = "SPY", tickers: list[str] | None = None,
@@ -126,14 +131,18 @@ def _run(config, date, etf, tickers, equity, screen_only, progress, llms) -> Scr
         say("checking strong calls against the pre-market move")
         reactions = check_all(verdicts, config["screen_min_conviction"], date)
         rank = {t: RANK[r.status] for t, r in reactions.items()}
-    picked = shortlist(verdicts, config["screen_min_conviction"], config["screen_max_names"], weights,
+    # A day trade needs an expiry within the window, so names that list none give their slot to the next.
+    last_expiry = _days_after(date, config["day_max_dte"]) if day else None
+    candidates = [v for v in verdicts if not day or v.ticker not in reactions
+                  or tradable(reactions[v.ticker], last_expiry)]
+    picked = shortlist(candidates, config["screen_min_conviction"], config["screen_max_names"], weights,
                        config["screen_direction"], rank)
     say(f"{len(picked)} names on the short list: {', '.join(v.ticker for v in picked) or 'none'}")
 
     result = ScreenResult(etf=etf if not tickers else "custom list", date=date, start=start, universe=len(weights),
                           with_news=len(news), verdicts=verdicts, failures=failures, shortlist=picked,
                           screen_model=config["screen_llm"], holdings=holdings, news_names=list(news),
-                          mode=config["screen_mode"], reactions=reactions)
+                          mode=config["screen_mode"], reactions=reactions, last_expiry=last_expiry)
     if not tickers and not is_historical(date):
         try:
             result.levels = get_levels(etf, date)
@@ -203,7 +212,7 @@ def render_report(result: ScreenResult, equity: float | None = None, risk: float
     sections = [result.levels, view] if result.mode == "day" else [view, result.levels]
     lines += [section for section in sections if section]
     if result.reactions:
-        lines.append(render_reactions(result.verdicts, result.reactions))
+        lines.append(render_reactions(result.verdicts, result.reactions, result.last_expiry))
     lines += [_render_idea(item, equity, risk) for item in result.ideas]
     if result.shortlist and not result.ideas:
         lines.append("Short list: " + ", ".join(f"{v.ticker} ({v.direction} {v.conviction})" for v in result.shortlist) + "\n")
